@@ -1,0 +1,49 @@
+# Rust / Cargo
+target/
+Cargo.lock.bak
+**/*.rs.bk
+
+# Go
+*.test
+*.out
+coverage.out
+coverage.html
+go.work
+go.work.sum
+
+# Profiling output
+*.prof
+*.pprof
+cpu.out
+mem.out
+mem.prof
+trace.out
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+.nvim/
+.helix/
+
+# OS noise
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Local env / logs / scratch
+.env
+.env.local
+*.log
+tmp/
+.cache/
+
+# Per-platform vendored archives in litesvm_vendor/ ARE tracked: this is
+# what `go get` consumers link against. Don't ignore them with a blanket
+# *.a rule.
