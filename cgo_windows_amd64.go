@@ -3,7 +3,7 @@
 package litesvm
 
 // #cgo CFLAGS: -I${SRCDIR}/litesvm_vendor -DUSE_VENDORED_LITESVM
-// #cgo LDFLAGS: ${SRCDIR}/litesvm_vendor/liblitesvm_go_windows_amd64.a -lws2_32 -luserenv -lbcrypt -lntdll -ladvapi32 -lkernel32
+// #cgo LDFLAGS: ${SRCDIR}/litesvm_vendor/liblitesvm_go_windows_amd64.a -lws2_32 -luserenv -lbcrypt -lntdll -ladvapi32 -lkernel32 -lsynchronization -lcrypt32 -luser32 -lgdi32
 import "C"
 
 const litesvmLinkInfo = "static windows_amd64"
