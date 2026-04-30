@@ -1,5 +1,3 @@
-//go:build cgo
-
 package litesvm
 
 import (
@@ -13,6 +11,17 @@ import (
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/programs/system"
 )
+
+// Tests do not call t.Parallel(). The Rust side reports errors through a
+// thread-local slot; running tests in parallel on the same OS thread pool
+// would cause one goroutine's error read to land on another goroutine's
+// write. Each test creates its own LiteSVM, but they all share that
+// process-wide error slot, so serial execution is required.
+
+// A deterministic non-system-program owner used for SetAccount tests.
+var testOwner = solana.PublicKey{1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+	11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+	21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32}
 
 // programBytesDir points at the shared fixture directory used by node-litesvm.
 // We reach across crates in tests only; the binding itself has no such coupling.
@@ -437,11 +446,6 @@ func TestTransferFailsOnInsufficientFunds(t *testing.T) {
 	}
 	t.Logf("fail tx error: %s", out.Error())
 }
-
-// A deterministic non-system-program owner used for SetAccount tests.
-var testOwner = solana.PublicKey{1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
-	11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
-	21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32}
 
 func TestGetAccountMissing(t *testing.T) {
 	svm, err := New()

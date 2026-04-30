@@ -163,12 +163,23 @@ $(WINDOWS_AMD64_ARCHIVE):
 	$(VENDOR_RUSTFLAGS) $(CARGO_NIGHTLY) zigbuild --release $(BUILD_STD_FLAGS) --target x86_64-pc-windows-gnu
 	@mkdir -p $(VENDOR_DIR)
 	cp target/x86_64-pc-windows-gnu/release/liblitesvm_go.a $@
-	@# llvm-strip can't process COFF archives directly (unsupported object
-	@# file format), so extract members, strip each, and repack with llvm-ar.
+	@# Two windows-gnu-only fixups in one extract/repack pass:
+	@#   1. rustc bundles openssl-sys's vendored libcrypto.a + libssl.a into
+	@#      the staticlib on linux but NOT on windows-gnu, so consumers see
+	@#      undefined references to BN_cmp / EVP_sha256 / etc. Merge them in.
+	@#   2. llvm-strip rejects COFF archives ("unsupported object file
+	@#      format"), so we strip extracted members one-by-one and repack.
 	@tmpdir=$$(mktemp -d) && abs=$$(cd $(@D) && pwd)/$(@F) && \
+		ossl=$$(find "$$(pwd)/target/x86_64-pc-windows-gnu/release/build" \
+		             -path '*/openssl-sys-*/out/openssl-build/install/lib' \
+		             -type d | head -1) && \
 		( cd $$tmpdir && llvm-ar x $$abs && \
-		  for o in *.o; do llvm-strip --strip-debug "$$o"; done && \
-		  llvm-ar rcsD $$abs.new *.o ) && \
+		  if [ -n "$$ossl" ]; then \
+		    llvm-ar x $$ossl/libcrypto.a && \
+		    llvm-ar x $$ossl/libssl.a; \
+		  fi && \
+		  for f in *; do llvm-strip --strip-debug "$$f"; done && \
+		  llvm-ar rcsD $$abs.new * ) && \
 		mv $$abs.new $$abs && rm -rf $$tmpdir
 	@echo "Built $@"
 

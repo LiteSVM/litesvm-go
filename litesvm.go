@@ -38,6 +38,12 @@ import (
 	"github.com/gagliardetto/solana-go"
 )
 
+// ErrLiteSVM is the sentinel that wraps every error returned by this
+// package. Use errors.Is to detect a litesvm-originated failure:
+//
+//	if errors.Is(err, litesvm.ErrLiteSVM) { ... }
+var ErrLiteSVM = errors.New("litesvm")
+
 // LiteSVM is an in-process Solana VM.
 type LiteSVM struct {
 	h *C.LiteSvmHandle
@@ -52,7 +58,7 @@ func New() (*LiteSVM, error) {
 
 	h := C.litesvm_new()
 	if h == nil {
-		return nil, lastError("litesvm_new returned null")
+		return nil, lastErrorLocked("litesvm_new returned null")
 	}
 	svm := &LiteSVM{h: h}
 	runtime.SetFinalizer(svm, (*LiteSVM).Close)
@@ -81,7 +87,7 @@ func (s *LiteSVM) Airdrop(pubkey solana.PublicKey, lamports uint64) error {
 		C.uint64_t(lamports),
 	)
 	if rc != 0 {
-		return lastError(fmt.Sprintf("airdrop rc=%d", rc))
+		return lastErrorLocked(fmt.Sprintf("airdrop rc=%d", rc))
 	}
 	return nil
 }
@@ -104,7 +110,7 @@ func (s *LiteSVM) Balance(pubkey solana.PublicKey) (uint64, bool, error) {
 	case 1:
 		return 0, false, nil
 	default:
-		return 0, false, lastError(fmt.Sprintf("get_balance rc=%d", rc))
+		return 0, false, lastErrorLocked(fmt.Sprintf("get_balance rc=%d", rc))
 	}
 }
 
@@ -119,7 +125,7 @@ func (s *LiteSVM) LatestBlockhash() (solana.Hash, error) {
 		(*C.uint8_t)(unsafe.Pointer(&out[0])),
 	)
 	if rc != 0 {
-		return solana.Hash{}, lastError(fmt.Sprintf("latest_blockhash rc=%d", rc))
+		return solana.Hash{}, lastErrorLocked(fmt.Sprintf("latest_blockhash rc=%d", rc))
 	}
 	return out, nil
 }
@@ -132,7 +138,7 @@ func (s *LiteSVM) ExpireBlockhash() error {
 
 	rc := C.litesvm_expire_blockhash(s.h)
 	if rc != 0 {
-		return lastError(fmt.Sprintf("expire_blockhash rc=%d", rc))
+		return lastErrorLocked(fmt.Sprintf("expire_blockhash rc=%d", rc))
 	}
 	return nil
 }
@@ -149,7 +155,7 @@ func (s *LiteSVM) MinimumBalanceForRentExemption(dataLen int) (uint64, error) {
 	v := C.litesvm_minimum_balance_for_rent_exemption(s.h, C.size_t(dataLen))
 	// Rust side returns u64::MAX on error.
 	if v == ^C.uint64_t(0) {
-		return 0, lastError("minimum_balance_for_rent_exemption")
+		return 0, lastErrorLocked("minimum_balance_for_rent_exemption")
 	}
 	return uint64(v), nil
 }
@@ -186,7 +192,7 @@ func (s *LiteSVM) SendLegacyTransaction(txBytes []byte) (*TxOutcome, error) {
 	}
 	h := C.litesvm_send_legacy_transaction(s.h, ptr, C.size_t(len(txBytes)))
 	if h == nil {
-		return nil, lastError("send_legacy_transaction")
+		return nil, lastErrorLocked("send_legacy_transaction")
 	}
 	out := &TxOutcome{h: h}
 	runtime.SetFinalizer(out, (*TxOutcome).Close)
@@ -424,7 +430,7 @@ func (o *TxOutcome) PostAccounts() ([]PostAccount, error) {
 			o.h, C.size_t(i), (*C.uint8_t)(unsafe.Pointer(&addr[0])),
 		)
 		if h == nil {
-			return nil, lastError(fmt.Sprintf("post_account_at(%d) returned null", i))
+			return nil, lastErrorLocked(fmt.Sprintf("post_account_at(%d) returned null", i))
 		}
 		a := &Account{h: h}
 		runtime.SetFinalizer(a, (*Account).Close)
@@ -446,7 +452,7 @@ func (s *LiteSVM) SendVersionedTransaction(txBytes []byte) (*TxOutcome, error) {
 	}
 	h := C.litesvm_send_versioned_transaction(s.h, ptr, C.size_t(len(txBytes)))
 	if h == nil {
-		return nil, lastError("send_versioned_transaction")
+		return nil, lastErrorLocked("send_versioned_transaction")
 	}
 	out := &TxOutcome{h: h}
 	runtime.SetFinalizer(out, (*TxOutcome).Close)
@@ -465,7 +471,7 @@ func (s *LiteSVM) SimulateLegacyTransaction(txBytes []byte) (*TxOutcome, error) 
 	}
 	h := C.litesvm_simulate_legacy_transaction(s.h, ptr, C.size_t(len(txBytes)))
 	if h == nil {
-		return nil, lastError("simulate_legacy_transaction")
+		return nil, lastErrorLocked("simulate_legacy_transaction")
 	}
 	out := &TxOutcome{h: h}
 	runtime.SetFinalizer(out, (*TxOutcome).Close)
@@ -484,7 +490,7 @@ func (s *LiteSVM) SimulateVersionedTransaction(txBytes []byte) (*TxOutcome, erro
 	}
 	h := C.litesvm_simulate_versioned_transaction(s.h, ptr, C.size_t(len(txBytes)))
 	if h == nil {
-		return nil, lastError("simulate_versioned_transaction")
+		return nil, lastErrorLocked("simulate_versioned_transaction")
 	}
 	out := &TxOutcome{h: h}
 	runtime.SetFinalizer(out, (*TxOutcome).Close)
@@ -498,7 +504,7 @@ func (s *LiteSVM) WarpToSlot(slot uint64) error {
 
 	rc := C.litesvm_warp_to_slot(s.h, C.uint64_t(slot))
 	if rc != 0 {
-		return lastError(fmt.Sprintf("warp_to_slot rc=%d", rc))
+		return lastErrorLocked(fmt.Sprintf("warp_to_slot rc=%d", rc))
 	}
 	return nil
 }
@@ -530,7 +536,7 @@ func (s *LiteSVM) SetSigverify(enabled bool) error {
 
 	rc := C.litesvm_set_sigverify(s.h, C.bool(enabled))
 	if rc != 0 {
-		return lastError(fmt.Sprintf("set_sigverify rc=%d", rc))
+		return lastErrorLocked(fmt.Sprintf("set_sigverify rc=%d", rc))
 	}
 	return nil
 }
@@ -547,7 +553,7 @@ func (s *LiteSVM) Sigverify() (bool, error) {
 	case 0:
 		return false, nil
 	default:
-		return false, lastError(fmt.Sprintf("get_sigverify rc=%d", rc))
+		return false, lastErrorLocked(fmt.Sprintf("get_sigverify rc=%d", rc))
 	}
 }
 
@@ -558,7 +564,7 @@ func (s *LiteSVM) SetBlockhashCheck(enabled bool) error {
 
 	rc := C.litesvm_set_blockhash_check(s.h, C.bool(enabled))
 	if rc != 0 {
-		return lastError(fmt.Sprintf("set_blockhash_check rc=%d", rc))
+		return lastErrorLocked(fmt.Sprintf("set_blockhash_check rc=%d", rc))
 	}
 	return nil
 }
@@ -575,7 +581,7 @@ func (s *LiteSVM) SetTransactionHistory(capacity int) error {
 
 	rc := C.litesvm_set_transaction_history(s.h, C.size_t(capacity))
 	if rc != 0 {
-		return lastError(fmt.Sprintf("set_transaction_history rc=%d", rc))
+		return lastErrorLocked(fmt.Sprintf("set_transaction_history rc=%d", rc))
 	}
 	return nil
 }
@@ -596,7 +602,7 @@ func (s *LiteSVM) SetLogBytesLimit(limit int) error {
 	}
 	rc := C.litesvm_set_log_bytes_limit(s.h, hasLimit, l)
 	if rc != 0 {
-		return lastError(fmt.Sprintf("set_log_bytes_limit rc=%d", rc))
+		return lastErrorLocked(fmt.Sprintf("set_log_bytes_limit rc=%d", rc))
 	}
 	return nil
 }
@@ -608,7 +614,7 @@ func (s *LiteSVM) SetLamports(lamports uint64) error {
 
 	rc := C.litesvm_set_lamports(s.h, C.uint64_t(lamports))
 	if rc != 0 {
-		return lastError(fmt.Sprintf("set_lamports rc=%d", rc))
+		return lastErrorLocked(fmt.Sprintf("set_lamports rc=%d", rc))
 	}
 	return nil
 }
@@ -620,7 +626,7 @@ func (s *LiteSVM) SetSysvars() error {
 
 	rc := C.litesvm_set_sysvars(s.h)
 	if rc != 0 {
-		return lastError(fmt.Sprintf("set_sysvars rc=%d", rc))
+		return lastErrorLocked(fmt.Sprintf("set_sysvars rc=%d", rc))
 	}
 	return nil
 }
@@ -632,7 +638,7 @@ func (s *LiteSVM) SetBuiltins() error {
 
 	rc := C.litesvm_set_builtins(s.h)
 	if rc != 0 {
-		return lastError(fmt.Sprintf("set_builtins rc=%d", rc))
+		return lastErrorLocked(fmt.Sprintf("set_builtins rc=%d", rc))
 	}
 	return nil
 }
@@ -644,7 +650,7 @@ func (s *LiteSVM) SetDefaultPrograms() error {
 
 	rc := C.litesvm_set_default_programs(s.h)
 	if rc != 0 {
-		return lastError(fmt.Sprintf("set_default_programs rc=%d", rc))
+		return lastErrorLocked(fmt.Sprintf("set_default_programs rc=%d", rc))
 	}
 	return nil
 }
@@ -656,7 +662,7 @@ func (s *LiteSVM) SetPrecompiles() error {
 
 	rc := C.litesvm_set_precompiles(s.h)
 	if rc != 0 {
-		return lastError(fmt.Sprintf("set_precompiles rc=%d", rc))
+		return lastErrorLocked(fmt.Sprintf("set_precompiles rc=%d", rc))
 	}
 	return nil
 }
@@ -670,7 +676,7 @@ func (s *LiteSVM) WithNativeMints() error {
 
 	rc := C.litesvm_with_native_mints(s.h)
 	if rc != 0 {
-		return lastError(fmt.Sprintf("with_native_mints rc=%d", rc))
+		return lastErrorLocked(fmt.Sprintf("with_native_mints rc=%d", rc))
 	}
 	return nil
 }
@@ -691,7 +697,7 @@ func (s *LiteSVM) AddProgramWithLoader(programID solana.PublicKey, bytes []byte,
 		(*C.uint8_t)(unsafe.Pointer(&loaderID[0])),
 	)
 	if rc != 0 {
-		return lastError(fmt.Sprintf("add_program_with_loader rc=%d", rc))
+		return lastErrorLocked(fmt.Sprintf("add_program_with_loader rc=%d", rc))
 	}
 	return nil
 }
@@ -719,7 +725,7 @@ func NewAccount(lamports uint64, data []byte, owner solana.PublicKey, executable
 		C.uint64_t(rentEpoch),
 	)
 	if h == nil {
-		return nil, lastError("account_new")
+		return nil, lastErrorLocked("account_new")
 	}
 	a := &Account{h: h}
 	runtime.SetFinalizer(a, (*Account).Close)
@@ -827,7 +833,7 @@ func (s *LiteSVM) SetAccount(pubkey solana.PublicKey, acct *Account) error {
 		acct.h,
 	)
 	if rc != 0 {
-		return lastError(fmt.Sprintf("set_account rc=%d", rc))
+		return lastErrorLocked(fmt.Sprintf("set_account rc=%d", rc))
 	}
 	return nil
 }
@@ -847,7 +853,7 @@ func (s *LiteSVM) AddProgram(programID solana.PublicKey, bytes []byte) error {
 		C.size_t(len(bytes)),
 	)
 	if rc != 0 {
-		return lastError(fmt.Sprintf("add_program rc=%d", rc))
+		return lastErrorLocked(fmt.Sprintf("add_program rc=%d", rc))
 	}
 	return nil
 }
@@ -868,7 +874,7 @@ func (s *LiteSVM) AddProgramFromFile(programID solana.PublicKey, path string) er
 		C.size_t(len(pb)),
 	)
 	if rc != 0 {
-		return lastError(fmt.Sprintf("add_program_from_file rc=%d", rc))
+		return lastErrorLocked(fmt.Sprintf("add_program_from_file rc=%d", rc))
 	}
 	return nil
 }
@@ -914,7 +920,7 @@ func (s *LiteSVM) Clock() (Clock, error) {
 	var c C.LiteSvmClock
 	rc := C.litesvm_get_clock(s.h, &c)
 	if rc != 0 {
-		return Clock{}, lastError(fmt.Sprintf("get_clock rc=%d", rc))
+		return Clock{}, lastErrorLocked(fmt.Sprintf("get_clock rc=%d", rc))
 	}
 	return Clock{
 		Slot:                uint64(c.slot),
@@ -939,7 +945,7 @@ func (s *LiteSVM) SetClock(c Clock) error {
 	}
 	rc := C.litesvm_set_clock(s.h, &cc)
 	if rc != 0 {
-		return lastError(fmt.Sprintf("set_clock rc=%d", rc))
+		return lastErrorLocked(fmt.Sprintf("set_clock rc=%d", rc))
 	}
 	return nil
 }
@@ -952,7 +958,7 @@ func (s *LiteSVM) Rent() (Rent, error) {
 	var r C.LiteSvmRent
 	rc := C.litesvm_get_rent(s.h, &r)
 	if rc != 0 {
-		return Rent{}, lastError(fmt.Sprintf("get_rent rc=%d", rc))
+		return Rent{}, lastErrorLocked(fmt.Sprintf("get_rent rc=%d", rc))
 	}
 	return Rent{
 		LamportsPerByteYear: uint64(r.lamports_per_byte_year),
@@ -973,7 +979,7 @@ func (s *LiteSVM) SetRent(r Rent) error {
 	}
 	rc := C.litesvm_set_rent(s.h, &cr)
 	if rc != 0 {
-		return lastError(fmt.Sprintf("set_rent rc=%d", rc))
+		return lastErrorLocked(fmt.Sprintf("set_rent rc=%d", rc))
 	}
 	return nil
 }
@@ -986,7 +992,7 @@ func (s *LiteSVM) EpochSchedule() (EpochSchedule, error) {
 	var e C.LiteSvmEpochSchedule
 	rc := C.litesvm_get_epoch_schedule(s.h, &e)
 	if rc != 0 {
-		return EpochSchedule{}, lastError(fmt.Sprintf("get_epoch_schedule rc=%d", rc))
+		return EpochSchedule{}, lastErrorLocked(fmt.Sprintf("get_epoch_schedule rc=%d", rc))
 	}
 	return EpochSchedule{
 		SlotsPerEpoch:            uint64(e.slots_per_epoch),
@@ -1013,7 +1019,7 @@ func (s *LiteSVM) SetEpochSchedule(e EpochSchedule) error {
 	}
 	rc := C.litesvm_set_epoch_schedule(s.h, &ce)
 	if rc != 0 {
-		return lastError(fmt.Sprintf("set_epoch_schedule rc=%d", rc))
+		return lastErrorLocked(fmt.Sprintf("set_epoch_schedule rc=%d", rc))
 	}
 	return nil
 }
@@ -1026,7 +1032,7 @@ func (s *LiteSVM) LastRestartSlot() (uint64, error) {
 	var out C.uint64_t
 	rc := C.litesvm_get_last_restart_slot(s.h, &out)
 	if rc != 0 {
-		return 0, lastError(fmt.Sprintf("get_last_restart_slot rc=%d", rc))
+		return 0, lastErrorLocked(fmt.Sprintf("get_last_restart_slot rc=%d", rc))
 	}
 	return uint64(out), nil
 }
@@ -1038,7 +1044,7 @@ func (s *LiteSVM) SetLastRestartSlot(slot uint64) error {
 
 	rc := C.litesvm_set_last_restart_slot(s.h, C.uint64_t(slot))
 	if rc != 0 {
-		return lastError(fmt.Sprintf("set_last_restart_slot rc=%d", rc))
+		return lastErrorLocked(fmt.Sprintf("set_last_restart_slot rc=%d", rc))
 	}
 	return nil
 }
@@ -1066,7 +1072,7 @@ func (s *LiteSVM) EpochRewards() (EpochRewards, error) {
 	var r C.LiteSvmEpochRewards
 	rc := C.litesvm_get_epoch_rewards(s.h, &r)
 	if rc != 0 {
-		return EpochRewards{}, lastError(fmt.Sprintf("get_epoch_rewards rc=%d", rc))
+		return EpochRewards{}, lastErrorLocked(fmt.Sprintf("get_epoch_rewards rc=%d", rc))
 	}
 	return EpochRewards{
 		DistributionStartingBlockHeight: uint64(r.distribution_starting_block_height),
@@ -1101,7 +1107,7 @@ func (s *LiteSVM) SetEpochRewards(e EpochRewards) error {
 	*(*[32]byte)(unsafe.Pointer(&cr.parent_blockhash)) = e.ParentBlockhash
 	rc := C.litesvm_set_epoch_rewards(s.h, &cr)
 	if rc != 0 {
-		return lastError(fmt.Sprintf("set_epoch_rewards rc=%d", rc))
+		return lastErrorLocked(fmt.Sprintf("set_epoch_rewards rc=%d", rc))
 	}
 	return nil
 }
@@ -1150,7 +1156,7 @@ func (s *LiteSVM) SetSlotHashes(items []SlotHash) error {
 	}
 	rc := C.litesvm_set_slot_hashes(s.h, ptr, C.size_t(len(c)))
 	if rc != 0 {
-		return lastError(fmt.Sprintf("set_slot_hashes rc=%d", rc))
+		return lastErrorLocked(fmt.Sprintf("set_slot_hashes rc=%d", rc))
 	}
 	return nil
 }
@@ -1209,7 +1215,7 @@ func (s *LiteSVM) SetStakeHistory(items []StakeHistoryItem) error {
 	}
 	rc := C.litesvm_set_stake_history(s.h, ptr, C.size_t(len(c)))
 	if rc != 0 {
-		return lastError(fmt.Sprintf("set_stake_history rc=%d", rc))
+		return lastErrorLocked(fmt.Sprintf("set_stake_history rc=%d", rc))
 	}
 	return nil
 }
@@ -1238,7 +1244,7 @@ func NewSlotHistory() (*SlotHistory, error) {
 
 	h := C.litesvm_slot_history_new_default()
 	if h == nil {
-		return nil, lastError("slot_history_new_default")
+		return nil, lastErrorLocked("slot_history_new_default")
 	}
 	sh := &SlotHistory{h: h}
 	runtime.SetFinalizer(sh, (*SlotHistory).Close)
@@ -1306,7 +1312,7 @@ func (sh *SlotHistory) SetNextSlot(slot uint64) error {
 
 	rc := C.litesvm_slot_history_set_next_slot(sh.h, C.uint64_t(slot))
 	if rc != 0 {
-		return lastError(fmt.Sprintf("slot_history_set_next_slot rc=%d", rc))
+		return lastErrorLocked(fmt.Sprintf("slot_history_set_next_slot rc=%d", rc))
 	}
 	return nil
 }
@@ -1319,7 +1325,7 @@ func (s *LiteSVM) SlotHistory() (*SlotHistory, error) {
 
 	h := C.litesvm_get_slot_history(s.h)
 	if h == nil {
-		return nil, lastError("get_slot_history")
+		return nil, lastErrorLocked("get_slot_history")
 	}
 	sh := &SlotHistory{h: h}
 	runtime.SetFinalizer(sh, (*SlotHistory).Close)
@@ -1340,7 +1346,7 @@ func (s *LiteSVM) SetSlotHistory(history *SlotHistory) error {
 
 	rc := C.litesvm_set_slot_history(s.h, history.h)
 	if rc != 0 {
-		return lastError(fmt.Sprintf("set_slot_history rc=%d", rc))
+		return lastErrorLocked(fmt.Sprintf("set_slot_history rc=%d", rc))
 	}
 	return nil
 }
@@ -1366,7 +1372,7 @@ func BuildTransferTx(payerSeed [32]byte, to solana.PublicKey, lamports uint64, b
 		nil, 0, &needed,
 	)
 	if rc != 0 {
-		return nil, lastError(fmt.Sprintf("build_transfer_tx probe rc=%d", rc))
+		return nil, lastErrorLocked(fmt.Sprintf("build_transfer_tx probe rc=%d", rc))
 	}
 	buf := make([]byte, int(needed))
 	var written C.size_t
@@ -1380,7 +1386,7 @@ func BuildTransferTx(payerSeed [32]byte, to solana.PublicKey, lamports uint64, b
 		&written,
 	)
 	if rc != 0 {
-		return nil, lastError(fmt.Sprintf("build_transfer_tx rc=%d", rc))
+		return nil, lastErrorLocked(fmt.Sprintf("build_transfer_tx rc=%d", rc))
 	}
 	if int(written) != len(buf) {
 		return nil, fmt.Errorf("build_transfer_tx: wrote %d, expected %d", int(written), len(buf))
@@ -1412,13 +1418,17 @@ func copyVarBuf(call func(buf *C.uint8_t, bufLen C.size_t) C.size_t) string {
 	return string(buf[:got])
 }
 
-// lastError reads the thread-local Rust error string and wraps it under the
-// given prefix. If the Rust side recorded no message, prefix is used as-is.
+// lastErrorLocked reads the thread-local Rust error string and wraps it
+// under the given prefix. The returned error is wrapped with ErrLiteSVM so
+// callers can detect package-originated failures via errors.Is. If the Rust
+// side recorded no message, the prefix alone is used.
 //
-// Callers must have the OS thread locked (see package doc comment) — the
+// Callers MUST have the OS thread locked (see package doc comment) — the
 // message being read here was written by the preceding cgo call in the
-// caller and must be read on the same OS thread.
-func lastError(prefix string) error {
+// caller and must be read on the same OS thread. The "Locked" suffix in
+// the name flags this precondition; mis-using it from an unpinned
+// goroutine can return another goroutine's error string.
+func lastErrorLocked(prefix string) error {
 	// Try a generous stack buffer first: avoids a probe call in the common
 	// case where the error fits, which in turn keeps the whole "operation +
 	// error readback" sequence to two cgo calls total.
@@ -1428,10 +1438,10 @@ func lastError(prefix string) error {
 		C.size_t(len(stack)),
 	))
 	if n == 0 {
-		return errors.New(prefix)
+		return fmt.Errorf("%w: %s", ErrLiteSVM, prefix)
 	}
 	if n <= len(stack) {
-		return fmt.Errorf("%s: %s", prefix, string(stack[:n]))
+		return fmt.Errorf("%w: %s: %s", ErrLiteSVM, prefix, string(stack[:n]))
 	}
 	// Error exceeded the stack buffer; allocate and re-read.
 	buf := make([]byte, n)
@@ -1442,7 +1452,7 @@ func lastError(prefix string) error {
 	if got > len(buf) {
 		got = len(buf)
 	}
-	return fmt.Errorf("%s: %s", prefix, string(buf[:got]))
+	return fmt.Errorf("%w: %s: %s", ErrLiteSVM, prefix, string(buf[:got]))
 }
 
 // ---------------------------------------------------------------------------
@@ -1612,7 +1622,7 @@ func (s *LiteSVM) ComputeBudget() (ComputeBudget, bool, error) {
 	case 1:
 		return ComputeBudget{}, false, nil
 	default:
-		return ComputeBudget{}, false, lastError(fmt.Sprintf("get_compute_budget rc=%d", rc))
+		return ComputeBudget{}, false, lastErrorLocked(fmt.Sprintf("get_compute_budget rc=%d", rc))
 	}
 }
 
@@ -1624,7 +1634,7 @@ func (s *LiteSVM) SetComputeBudget(b ComputeBudget) error {
 	c := cbToC(b)
 	rc := C.litesvm_set_compute_budget(s.h, &c)
 	if rc != 0 {
-		return lastError(fmt.Sprintf("set_compute_budget rc=%d", rc))
+		return lastErrorLocked(fmt.Sprintf("set_compute_budget rc=%d", rc))
 	}
 	return nil
 }
@@ -1646,7 +1656,7 @@ func NewFeatureSet() (*FeatureSet, error) {
 
 	h := C.litesvm_feature_set_new_default()
 	if h == nil {
-		return nil, lastError("feature_set_new_default")
+		return nil, lastErrorLocked("feature_set_new_default")
 	}
 	fs := &FeatureSet{h: h}
 	runtime.SetFinalizer(fs, (*FeatureSet).Close)
@@ -1661,7 +1671,7 @@ func NewFeatureSetAllEnabled() (*FeatureSet, error) {
 
 	h := C.litesvm_feature_set_new_all_enabled()
 	if h == nil {
-		return nil, lastError("feature_set_new_all_enabled")
+		return nil, lastErrorLocked("feature_set_new_all_enabled")
 	}
 	fs := &FeatureSet{h: h}
 	runtime.SetFinalizer(fs, (*FeatureSet).Close)
@@ -1716,7 +1726,7 @@ func (fs *FeatureSet) Activate(featureID solana.PublicKey, slot uint64) error {
 		C.uint64_t(slot),
 	)
 	if rc != 0 {
-		return lastError(fmt.Sprintf("feature_set_activate rc=%d", rc))
+		return lastErrorLocked(fmt.Sprintf("feature_set_activate rc=%d", rc))
 	}
 	return nil
 }
@@ -1731,7 +1741,7 @@ func (fs *FeatureSet) Deactivate(featureID solana.PublicKey) error {
 		(*C.uint8_t)(unsafe.Pointer(&featureID[0])),
 	)
 	if rc != 0 {
-		return lastError(fmt.Sprintf("feature_set_deactivate rc=%d", rc))
+		return lastErrorLocked(fmt.Sprintf("feature_set_deactivate rc=%d", rc))
 	}
 	return nil
 }
@@ -1824,7 +1834,7 @@ func (s *LiteSVM) SetFeatureSet(features *FeatureSet) error {
 
 	rc := C.litesvm_set_feature_set(s.h, features.h)
 	if rc != 0 {
-		return lastError(fmt.Sprintf("set_feature_set rc=%d", rc))
+		return lastErrorLocked(fmt.Sprintf("set_feature_set rc=%d", rc))
 	}
 	return nil
 }
