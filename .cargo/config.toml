@@ -1,0 +1,10 @@
+# Use the native MinGW cross-toolchain for the windows-gnu target instead of
+# letting cargo-zigbuild pick zig's lld. zig's lld lays out the static archive
+# with conventions that don't survive a cross-link from cgo's MinGW gcc.exe
+# at consume time (TLS / unwinder / __chkstk_ms ABI mismatch -> runtime
+# crashes on the first cgo call). MinGW on the build host (brew install
+# mingw-w64) matches the MinGW that ships with the GitHub windows runner,
+# so the produced .a links cleanly.
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+ar = "x86_64-w64-mingw32-ar"

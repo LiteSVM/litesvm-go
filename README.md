@@ -111,7 +111,10 @@ make test-dev
 # Release: rebuild every vendored archive committed to git.
 # Requires:
 #   - rustup targets for darwin/linux/windows
-#   - cargo-zigbuild + zig (used for linux and windows cross-compilation)
+#   - cargo-zigbuild + zig (used for the linux cross-compiles)
+#   - mingw-w64 (used for the windows cross-compile; do not substitute
+#     zigbuild — zig's lld produces a staticlib whose TLS/unwinder ABI
+#     does not link cleanly against cgo's MinGW gcc on Windows)
 #   - nightly toolchain with rust-src (-Z build-std + immediate-abort
 #     are unstable, so vendor builds run on `cargo +nightly`)
 #   - llvm-strip (ships with LLVM; used to drop debug info from each

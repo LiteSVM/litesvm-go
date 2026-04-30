@@ -18,9 +18,14 @@
 #       aarch64-unknown-linux-gnu  x86_64-unknown-linux-gnu
 #       aarch64-unknown-linux-musl x86_64-unknown-linux-musl
 #       x86_64-pc-windows-gnu
-#   - cargo-zigbuild and zig (used for the linux/windows targets):
+#   - cargo-zigbuild and zig (used for the linux targets):
 #       cargo install cargo-zigbuild
 #       brew install zig    # or your package manager equivalent
+#   - mingw-w64 (used for the windows target; must NOT be replaced with
+#     zigbuild — zig's lld emits a static archive whose TLS / unwinder /
+#     __chkstk_ms ABI does not survive the cross-link to cgo's MinGW gcc on
+#     the consumer machine):
+#       brew install mingw-w64    # or your package manager equivalent
 #   - nightly toolchain with rust-src (used by `vendor` builds for -Z build-std):
 #       rustup toolchain install nightly
 #       rustup component add rust-src --toolchain nightly
@@ -159,8 +164,16 @@ $(MUSL_LINUX_ARM64_ARCHIVE):
 	$(STRIP_DEBUG) $@
 	@echo "Built $@"
 
+# Note: windows uses plain `cargo build` (not `cargo zigbuild`) because zig's
+# lld emits a staticlib with TLS / unwinder / __chkstk_ms conventions that
+# clash with cgo's MinGW linker on consumer machines and crash on first call.
+# The .cargo/config.toml in the repo points cargo at the host's MinGW
+# toolchain (brew install mingw-w64) for this target. Same toolchain family
+# as the GitHub windows runner, so the resulting .a links cleanly there.
 $(WINDOWS_AMD64_ARCHIVE):
-	$(VENDOR_RUSTFLAGS) $(CARGO_NIGHTLY) zigbuild --release $(BUILD_STD_FLAGS) --target x86_64-pc-windows-gnu
+	CC_x86_64_pc_windows_gnu=x86_64-w64-mingw32-gcc \
+	AR_x86_64_pc_windows_gnu=x86_64-w64-mingw32-ar \
+	$(VENDOR_RUSTFLAGS) $(CARGO_NIGHTLY) build --release $(BUILD_STD_FLAGS) --target x86_64-pc-windows-gnu
 	@mkdir -p $(VENDOR_DIR)
 	cp target/x86_64-pc-windows-gnu/release/liblitesvm_go.a $@
 	@# Two windows-gnu-only fixups in one extract/repack pass:
