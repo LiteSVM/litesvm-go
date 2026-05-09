@@ -26,7 +26,7 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
       - name: Lint rust
-        run: cargo clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
       - name: gofmt
         run: |
           out=$(gofmt -l .)
@@ -37,3 +37,7 @@ jobs:
           fi
       - name: go vet
         run: go vet ./...
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.1

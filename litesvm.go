@@ -1,5 +1,9 @@
-// Package litesvm is a thin Go wrapper around the LiteSVM Rust library,
-// accessed through a C ABI and cgo.
+// Package litesvm provides Go bindings for LiteSVM, an in-process Solana
+// VM for fast testing of Solana programs and clients. It is a thin wrapper
+// around the LiteSVM Rust library, accessed through a C ABI and cgo, and
+// is intended as a drop-in alternative to solana-test-validator for Go
+// unit and integration tests: a fresh handle boots in milliseconds and
+// runs in the same process as the test.
 //
 // It uses github.com/gagliardetto/solana-go for the core Solana types
 // (PublicKey, Hash, Signature) so that values returned from this package
