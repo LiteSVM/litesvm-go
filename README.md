@@ -9,122 +9,48 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/LiteSVM/litesvm-go.svg)](https://pkg.go.dev/github.com/LiteSVM/litesvm-go)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-Go bindings for [LiteSVM](https://github.com/LiteSVM/litesvm) — an in-process
-Solana VM optimized for fast, ergonomic program testing. `litesvm-go`
-exposes the LiteSVM Rust crate through a thin C ABI and calls into it from
-Go via cgo.
+Go bindings for [LiteSVM](https://github.com/LiteSVM/litesvm) — a fast,
+in-process Solana VM purpose-built for testing programs and clients.
 
 If you've been writing Solana tests in Go against `solana-test-validator`
 (slow, heavyweight) or hand-rolled mocks (incomplete), `litesvm-go` gives
-you a real SVM — with sysvars, programs, compute budget, and feature gates
-— that boots in milliseconds and runs in the same process as your tests.
+you a real SVM with sysvars, programs, compute budget, and feature gates,
+that boots in milliseconds and runs in the same process as your tests.
 
-Core Solana types (`PublicKey`, `Hash`, `Signature`) are reused from
-[gagliardetto/solana-go](https://github.com/gagliardetto/solana-go) so
+Core types (`PublicKey`, `Hash`, `Signature`) come straight from
+[gagliardetto/solana-go](https://github.com/gagliardetto/solana-go), so
 values flow naturally between `litesvm-go` and the rest of the Go Solana
 ecosystem.
 
-> Status: experimental. The API is stable enough to write real tests
-> against but may grow as it catches up with the Rust crate.
+## :sparkles: Highlights
 
-## Highlights
-
-- Fast: an in-process VM, no validator, no RPC.
-- Familiar: re-uses `solana-go`'s `PublicKey`, `Hash`, `Signature`, and
+- **Fast**: in-process VM, no validator, no RPC.
+- **Familiar**: reuses `solana-go`'s `PublicKey`, `Hash`, `Signature`, and
   bincode-encoded transactions, so existing Go Solana code drops in.
-- Honest about errors: every entry point returns `(value, error)`; panics
-  on the Rust side are caught and converted to errors.
-- Full surface area: airdrops, transactions (legacy + v0), simulation,
-  account reads/writes, sysvars, compute budget, feature gates, time
-  travel, custom programs, transaction history.
+- **Honest about errors**: every entry point returns `(value, error)`;
+  panics on the Rust side are caught and converted to errors.
+- **Batteries included**: airdrops, transactions (legacy + v0), simulation,
+  account read/write, sysvars, compute budget, feature gates, time travel,
+  custom programs, transaction history.
 
-## Requirements
-
-- Go 1.24 or newer with cgo enabled (the default)
-- A C toolchain that cgo can drive (Xcode Command Line Tools on macOS;
-  `gcc`/`clang` on Linux; `mingw-w64` on Windows)
-- macOS (Intel or Apple Silicon), Linux (glibc or musl, amd64 or arm64),
-  or Windows (amd64)
-
-You do **not** need Rust to use `litesvm-go`. Prebuilt static archives
-for every supported platform are vendored in
-[litesvm_vendor/](./litesvm_vendor) and statically linked into your
-binary by cgo at build time.
-
-## Installation
+## :package: Install
 
 ```sh
 go get github.com/LiteSVM/litesvm-go
 ```
 
-That's it. `go build` / `go test` in your project will pick the right
-archive automatically based on `GOOS` / `GOARCH`:
+That's it. `go build` / `go test` will pick the right prebuilt static
+archive automatically based on `GOOS` / `GOARCH`. **No Rust toolchain
+required** — archives are vendored in [litesvm_vendor/](./litesvm_vendor)
+and statically linked at build time.
 
-| OS      | Arch  | C library | Vendored archive                    |
-| ------- | ----- | --------- | ----------------------------------- |
-| macOS   | amd64 | -         | `liblitesvm_go_darwin_amd64.a`      |
-| macOS   | arm64 | -         | `liblitesvm_go_darwin_arm64.a`      |
-| Linux   | amd64 | glibc     | `liblitesvm_go_glibc_linux_amd64.a` |
-| Linux   | arm64 | glibc     | `liblitesvm_go_glibc_linux_arm64.a` |
-| Linux   | amd64 | musl      | `liblitesvm_go_musl_linux_amd64.a`  |
-| Linux   | arm64 | musl      | `liblitesvm_go_musl_linux_arm64.a`  |
-| Windows | amd64 | -         | `liblitesvm_go_windows_amd64.a`     |
+Supported platforms: macOS (amd64, arm64), Linux (amd64, arm64; glibc or
+musl), Windows (amd64). Go 1.24+.
 
-### Linux: glibc vs musl
+> :penguin: **Alpine / musl users**: add `-tags musl` to your `go build`
+> / `go test` invocation.
 
-The default Linux archives target glibc (Debian, Ubuntu, RHEL, etc.). If
-you're building on Alpine or any other musl-based distro, opt into the
-musl archive with a build tag:
-
-```sh
-go build -tags musl ./...
-go test -tags musl ./...
-```
-
-### Build modes
-
-| Mode                   | Tag           | When to use                                                                |
-| ---------------------- | ------------- | -------------------------------------------------------------------------- |
-| Vendored static        | _(default)_   | Normal use — the `go get` path                                             |
-| Local cargo build      | `litesvm_dev` | Iterating on `src/lib.rs` (see below)                                      |
-| System dynamic library | `dynamic`     | You have `liblitesvm_go.{so,dylib}` installed somewhere on the loader path |
-
-```sh
-go test ./...                       # default: vendored static
-go test -tags litesvm_dev ./...     # link against ./target/debug/
-go build -tags dynamic ./...        # link against system liblitesvm_go
-```
-
-## Building from source
-
-You only need to do this if you are modifying [src/lib.rs](./src/lib.rs)
-or refreshing the vendored archives for a release.
-
-```sh
-git clone https://github.com/LiteSVM/litesvm-go.git
-cd litesvm-go
-
-# Iterating: build the local debug archive and run tests against it.
-make dev
-make test-dev
-
-# Release: rebuild every vendored archive committed to git.
-# Requires:
-#   - rustup targets for darwin/linux/windows
-#   - cargo-zigbuild + zig (used for the linux cross-compiles)
-#   - mingw-w64 (used for the windows cross-compile; do not substitute
-#     zigbuild — zig's lld produces a staticlib whose TLS/unwinder ABI
-#     does not link cleanly against cgo's MinGW gcc on Windows)
-#   - nightly toolchain with rust-src (-Z build-std + immediate-abort
-#     are unstable, so vendor builds run on `cargo +nightly`)
-#   - llvm-strip (ships with LLVM; used to drop debug info from each
-#     archive, ~3x size reduction on linux/windows)
-make vendor
-```
-
-Run `make` for the full list of targets.
-
-## Quick start
+## :rocket: Quick start
 
 A minimal transfer test, mirroring the [LiteSVM
 README](https://github.com/LiteSVM/litesvm#-minimal-example):
@@ -193,13 +119,13 @@ func TestTransfer(t *testing.T) {
 A fresh `LiteSVM` ships with the core Solana programs (System Program,
 SPL Token, etc.) preloaded.
 
-## Sending and simulating transactions
+## :outbox_tray: Sending and simulating transactions
 
 Both legacy and versioned transactions are supported. The methods accept
 the bincode-encoded bytes produced by `(*solana.Transaction).MarshalBinary`.
 
 ```go
-out, err := svm.SendLegacyTransaction(txBytes)     // commit on success
+out, err := svm.SendLegacyTransaction(txBytes)     // commits on success
 out, err := svm.SendVersionedTransaction(txBytes)  // same, for v0 messages
 
 sim, err := svm.SimulateLegacyTransaction(txBytes)    // never commits
@@ -246,7 +172,7 @@ if prior != nil {
 }
 ```
 
-## Accounts
+## :card_file_box: Accounts
 
 Accounts are opaque handles. Always `Close` them (or rely on the finalizer).
 
@@ -267,7 +193,7 @@ defer acct.Close()
 _ = svm.SetAccount(targetAddr, acct)
 ```
 
-## Loading programs
+## :jigsaw: Loading programs
 
 Load any compiled SBF program so transactions can invoke it.
 
@@ -282,7 +208,7 @@ _ = svm.AddProgram(programID, bytes)
 _ = svm.AddProgramWithLoader(programID, bytes, loaderID)
 ```
 
-## Time travel and sysvars
+## :clock3: Time travel and sysvars
 
 Forward the internal clock:
 
@@ -326,7 +252,7 @@ _ = sh.Check(42) // SlotHistoryFound / SlotHistoryNotFound / SlotHistoryTooOld
 _ = svm.SetSlotHistory(sh)
 ```
 
-## Compute budget
+## :gear: Compute budget
 
 ```go
 budget, set, _ := svm.ComputeBudget()
@@ -336,11 +262,10 @@ if !set {
 _ = svm.SetComputeBudget(budget)
 ```
 
-`ComputeBudget` is a plain struct mirroring the 44 fields of the Rust
-`ComputeBudget`. `usize` fields are normalized to `uint64`; `HeapSize`
-stays `uint32`.
+`ComputeBudget` is a plain struct mirroring the Rust `ComputeBudget`.
+`usize` fields are normalized to `uint64`; `HeapSize` stays `uint32`.
 
-## Feature gating
+## :triangular_flag_on_post: Feature gating
 
 ```go
 // Start with all features off, then activate what you care about.
@@ -356,10 +281,10 @@ _ = fs.Deactivate(featureID)
 _ = svm.SetFeatureSet(fs)
 ```
 
-Inspecting a feature set: `IsActive`, `ActivatedSlot`, `ActiveCount`,
-`InactiveCount`, `ActiveFeatures`, `InactiveFeatures`.
+Inspect with `IsActive`, `ActivatedSlot`, `ActiveCount`, `InactiveCount`,
+`ActiveFeatures`, `InactiveFeatures`.
 
-## Configuration
+## :wrench: Configuration
 
 Each setter mirrors the builder method on the Rust `LiteSVM` type:
 
@@ -376,70 +301,78 @@ _ = svm.SetPrecompiles()               // enable ed25519/secp256k1 precompiles
 _ = svm.WithNativeMints()              // seed wrapped-SOL mint
 ```
 
-## API surface
+For the complete method list, see the
+[GoDoc](https://pkg.go.dev/github.com/LiteSVM/litesvm-go).
 
-- Lifecycle: `New`, `Close`, `Version`
-- Funding and balances: `Airdrop`, `Balance`, `MinimumBalanceForRentExemption`
-- Blockhash: `LatestBlockhash`, `ExpireBlockhash`
-- Transactions: `SendLegacyTransaction`, `SendVersionedTransaction`,
-  `SimulateLegacyTransaction`, `SimulateVersionedTransaction`,
-  `GetTransaction`
-- `TxOutcome`: `IsOk`, `Signature`, `ComputeUnits`, `Fee`, `Logs`, `Error`,
-  `ReturnData`, `InnerInstructions`, `PostAccounts`
-- Accounts: `GetAccount`, `SetAccount`, `NewAccount` (`Lamports`, `Owner`,
-  `Executable`, `RentEpoch`, `Data`)
-- Programs: `AddProgram`, `AddProgramFromFile`, `AddProgramWithLoader`
-- Time: `WarpToSlot`
-- Sysvars: `Clock`, `Rent`, `EpochSchedule`, `EpochRewards`,
-  `LastRestartSlot`, `SlotHashes`, `StakeHistory`, `SlotHistory`
-- Compute budget: `ComputeBudget`, `SetComputeBudget`
-- Feature set: `NewFeatureSet`, `NewFeatureSetAllEnabled`, `IsActive`,
-  `ActivatedSlot`, `Activate`, `Deactivate`, `ActiveCount`, `InactiveCount`,
-  `ActiveFeatures`, `InactiveFeatures`, `SetFeatureSet`
-- Configuration: `SetSigverify`, `Sigverify`, `SetBlockhashCheck`,
-  `SetTransactionHistory`, `SetLogBytesLimit`, `SetLamports`, `SetSysvars`,
-  `SetBuiltins`, `SetDefaultPrograms`, `SetPrecompiles`, `WithNativeMints`
+## :memo: Notes
 
-## Thread safety
+**Thread safety.** A `LiteSVM` handle is not safe for concurrent use from
+multiple goroutines (the underlying Rust type is not `Sync`, and most
+methods mutate internal state). Confine a handle to a single goroutine,
+or wrap it in a `sync.Mutex`.
 
-`LiteSVM` handles are not safe for concurrent use from multiple goroutines.
-The underlying Rust type is not `Sync`, and most method calls mutate
-internal state. Either confine a handle to a single goroutine or wrap it
-in a `sync.Mutex`.
+**Panic behavior.** Vendored release archives are built with
+`immediate-abort`: any panic inside Rust aborts the host process directly,
+without unwinding. This is a deliberate trade for ~50% smaller archives.
+If you ever hit one in practice, please open an issue with a reproducer.
 
-## Panic safety
-
-The vendored release archives are built with the `immediate-abort` panic
-strategy: any panic inside Rust code aborts the host process directly,
-without unwinding and without printing a panic message. This is a
-deliberate trade for ~50% smaller archives — most of std's
-panic-formatting code is dropped at compile time. If you ever hit a
-panic-driven abort in practice, please open an issue with a reproducer.
-
-The `litesvm_dev` build path (`cargo build` + `-tags litesvm_dev`) uses
-the default debug profile with `panic = "unwind"`. In that mode every
-`extern "C"` entry point catches panics with `std::panic::catch_unwind`
-and converts them to non-zero return codes plus a descriptive error
-string — useful while actively debugging the Rust side.
-
-## Troubleshooting
+## :sos: Troubleshooting
 
 **`undefined reference to ...` on Linux** — usually means you're on a
 musl-based distro (Alpine) but linking the glibc archive. Add `-tags musl`
 to your `go build` / `go test` invocation.
 
-**`ld: library 'litesvm_go' not found`** — happens in `litesvm_dev` mode
-when you forgot to run `cargo build` first. The `target/debug/` archive
-must exist for that build tag to link.
+**`go: cannot find module providing package`** — confirm `go get`
+succeeded and your module is on Go 1.24+.
 
-**`go: cannot find module providing package`** — confirm `go get` succeeded
-and your module is on Go 1.24+.
+---
 
-**Cross-compilation** — cgo packages can't be cross-compiled with the
-default Go toolchain. To build for a different OS or libc you need a C
-toolchain that matches the target. The vendored archives themselves are
-target-specific; the build constraint on each `cgo_*.go` file picks the
-right one based on `GOOS`, `GOARCH`, and the `musl` build tag.
+# Contributing
+
+The sections below are for contributors working on `litesvm-go` itself.
+
+## Building from source
+
+You only need to do this if you are modifying [src/lib.rs](./src/lib.rs)
+or refreshing the vendored archives for a release.
+
+```sh
+git clone https://github.com/LiteSVM/litesvm-go.git
+cd litesvm-go
+
+# Iterating: build the local debug archive and run tests against it.
+make dev
+make test-dev
+
+# Release: rebuild every vendored archive committed to git.
+# Requires:
+#   - rustup targets for darwin/linux/windows
+#   - cargo-zigbuild + zig (used for the linux cross-compiles)
+#   - mingw-w64 (used for the windows cross-compile; do not substitute
+#     zigbuild — zig's lld produces a staticlib whose TLS/unwinder ABI
+#     does not link cleanly against cgo's MinGW gcc on Windows)
+#   - nightly toolchain with rust-src (-Z build-std + immediate-abort
+#     are unstable, so vendor builds run on `cargo +nightly`)
+#   - llvm-strip (ships with LLVM; used to drop debug info from each
+#     archive, ~3x size reduction on linux/windows)
+make vendor
+```
+
+Run `make` for the full list of targets.
+
+### Build modes
+
+| Mode                   | Tag           | When to use                                                                |
+| ---------------------- | ------------- | -------------------------------------------------------------------------- |
+| Vendored static        | _(default)_   | Normal use — the `go get` path                                             |
+| Local cargo build      | `litesvm_dev` | Iterating on `src/lib.rs` (see above)                                      |
+| System dynamic library | `dynamic`     | You have `liblitesvm_go.{so,dylib}` installed somewhere on the loader path |
+
+```sh
+go test ./...                       # default: vendored static
+go test -tags litesvm_dev ./...     # link against ./target/debug/
+go build -tags dynamic ./...        # link against system liblitesvm_go
+```
 
 ## Repository layout
 
