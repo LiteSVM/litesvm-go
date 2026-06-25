@@ -2735,8 +2735,11 @@ fn compute_budget_to_ffi(
         heap_size: b.heap_size,
         heap_cost: b.heap_cost,
         mem_op_base_cost: b.mem_op_base_cost,
-        alt_bn128_addition_cost: b.alt_bn128_addition_cost,
-        alt_bn128_multiplication_cost: b.alt_bn128_multiplication_cost,
+        // Agave 4.0 split the single alt_bn128 add/mul costs into G1/G2
+        // variants; the FFI struct keeps its original (G1) field names for
+        // ABI stability and mirrors the G1 cost, the original semantic.
+        alt_bn128_addition_cost: b.alt_bn128_g1_addition_cost,
+        alt_bn128_multiplication_cost: b.alt_bn128_g1_multiplication_cost,
         alt_bn128_pairing_one_pair_cost_first: b.alt_bn128_pairing_one_pair_cost_first,
         alt_bn128_pairing_one_pair_cost_other: b.alt_bn128_pairing_one_pair_cost_other,
         big_modular_exponentiation_base_cost: b.big_modular_exponentiation_base_cost,
@@ -2797,8 +2800,8 @@ fn compute_budget_from_ffi(
     b.heap_size = f.heap_size;
     b.heap_cost = f.heap_cost;
     b.mem_op_base_cost = f.mem_op_base_cost;
-    b.alt_bn128_addition_cost = f.alt_bn128_addition_cost;
-    b.alt_bn128_multiplication_cost = f.alt_bn128_multiplication_cost;
+    b.alt_bn128_g1_addition_cost = f.alt_bn128_addition_cost;
+    b.alt_bn128_g1_multiplication_cost = f.alt_bn128_multiplication_cost;
     b.alt_bn128_pairing_one_pair_cost_first = f.alt_bn128_pairing_one_pair_cost_first;
     b.alt_bn128_pairing_one_pair_cost_other = f.alt_bn128_pairing_one_pair_cost_other;
     b.big_modular_exponentiation_base_cost = f.big_modular_exponentiation_base_cost;
