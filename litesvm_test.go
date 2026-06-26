@@ -8,8 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	bin "github.com/gagliardetto/binary"
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/programs/system"
+	"github.com/gagliardetto/solana-go/sysvar"
 )
 
 // Tests do not call t.Parallel(). The Rust side reports errors through a
@@ -136,6 +138,15 @@ func TestRentExemption(t *testing.T) {
 	big, err := svm.MinimumBalanceForRentExemption(1024)
 	if err != nil {
 		t.Fatalf("MinimumBalanceForRentExemption(1024): %v", err)
+	}
+	// Pin the exact default-rent values (this path is now computed in Go from
+	// the Rent sysvar rather than via FFI, so assert byte-for-byte parity with
+	// Agave's canonical formula: (128 overhead + data_len) * 3480 * 2.0).
+	if zero != 890_880 {
+		t.Fatalf("0-byte rent = %d, want 890880", zero)
+	}
+	if big != 8_017_920 {
+		t.Fatalf("1024-byte rent = %d, want 8017920", big)
 	}
 	if big <= zero {
 		t.Fatalf("expected 1024-byte rent (%d) > 0-byte rent (%d)", big, zero)
@@ -388,9 +399,8 @@ func TestMinimalExample(t *testing.T) {
 	if fromAccount == nil {
 		t.Fatal("expected from account to exist")
 	}
-	defer fromAccount.Close()
 	wantFrom := originalBal - expectedFee - transferAmount
-	if got := fromAccount.Lamports(); got != wantFrom {
+	if got := fromAccount.Lamports; got != wantFrom {
 		t.Fatalf("from lamports = %d, want %d", got, wantFrom)
 	}
 
@@ -398,9 +408,8 @@ func TestMinimalExample(t *testing.T) {
 	if toAccount == nil {
 		t.Fatal("expected to account to exist")
 	}
-	defer toAccount.Close()
 	wantTo := originalBal + transferAmount
-	if got := toAccount.Lamports(); got != wantTo {
+	if got := toAccount.Lamports; got != wantTo {
 		t.Fatalf("to lamports = %d, want %d", got, wantTo)
 	}
 }
@@ -456,7 +465,6 @@ func TestGetAccountMissing(t *testing.T) {
 
 	a := svm.GetAccount(randPubkey(t))
 	if a != nil {
-		defer a.Close()
 		t.Fatal("expected nil for non-existent account")
 	}
 }
@@ -478,15 +486,14 @@ func TestGetAccountAfterAirdrop(t *testing.T) {
 	if a == nil {
 		t.Fatal("expected account after airdrop")
 	}
-	defer a.Close()
 
-	if got := a.Lamports(); got != amount {
+	if got := a.Lamports; got != amount {
 		t.Fatalf("lamports = %d, want %d", got, amount)
 	}
-	if a.Executable() {
+	if a.Executable {
 		t.Fatal("airdrop account should not be executable")
 	}
-	if data := a.Data(); len(data) != 0 {
+	if data := a.Data; len(data) != 0 {
 		t.Fatalf("airdrop account data = %d bytes, want 0", len(data))
 	}
 }
@@ -506,11 +513,7 @@ func TestSetAccountRoundtrip(t *testing.T) {
 		t.Fatalf("MinimumBalanceForRentExemption: %v", err)
 	}
 
-	src, err := NewAccount(rent, payload, testOwner, false, 0)
-	if err != nil {
-		t.Fatalf("NewAccount: %v", err)
-	}
-	defer src.Close()
+	src := &Account{Lamports: rent, Data: payload, Owner: testOwner, RentEpoch: 7}
 
 	if err := svm.SetAccount(pk, src); err != nil {
 		t.Fatalf("SetAccount: %v", err)
@@ -520,15 +523,17 @@ func TestSetAccountRoundtrip(t *testing.T) {
 	if got == nil {
 		t.Fatal("expected account to exist after SetAccount")
 	}
-	defer got.Close()
 
-	if got.Lamports() != rent {
-		t.Fatalf("lamports = %d, want %d", got.Lamports(), rent)
+	if got.Lamports != rent {
+		t.Fatalf("lamports = %d, want %d", got.Lamports, rent)
 	}
-	if !got.Owner().Equals(testOwner) {
-		t.Fatalf("owner = %s, want %s", got.Owner(), testOwner)
+	if got.RentEpoch != 7 {
+		t.Fatalf("rent_epoch = %d, want 7", got.RentEpoch)
 	}
-	if gotData := got.Data(); string(gotData) != string(payload) {
+	if !got.Owner.Equals(testOwner) {
+		t.Fatalf("owner = %s, want %s", got.Owner, testOwner)
+	}
+	if gotData := got.Data; string(gotData) != string(payload) {
 		t.Fatalf("data = %q, want %q", gotData, payload)
 	}
 }
@@ -552,9 +557,8 @@ func TestAddProgramFromFile(t *testing.T) {
 	if acct == nil {
 		t.Fatal("program account missing after AddProgramFromFile")
 	}
-	defer acct.Close()
 
-	if !acct.Executable() {
+	if !acct.Executable {
 		t.Fatal("program account should be executable")
 	}
 }
@@ -581,9 +585,8 @@ func TestAddProgramFromBytes(t *testing.T) {
 	if acct == nil {
 		t.Fatal("program account missing after AddProgram")
 	}
-	defer acct.Close()
 
-	if !acct.Executable() {
+	if !acct.Executable {
 		t.Fatal("program account should be executable")
 	}
 }
@@ -595,7 +598,7 @@ func TestClockRoundtrip(t *testing.T) {
 	}
 	defer svm.Close()
 
-	want := Clock{
+	want := &sysvar.Clock{
 		Slot:                42_000,
 		EpochStartTimestamp: 1_700_000_000,
 		Epoch:               7,
@@ -609,7 +612,7 @@ func TestClockRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Clock: %v", err)
 	}
-	if got != want {
+	if *got != *want {
 		t.Fatalf("clock mismatch\n got=%+v\nwant=%+v", got, want)
 	}
 }
@@ -626,14 +629,14 @@ func TestRentRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Rent: %v", err)
 	}
-	if def.LamportsPerByteYear == 0 {
-		t.Fatal("expected non-zero default lamports_per_byte_year")
+	if def.LamportsPerByte == 0 {
+		t.Fatal("expected non-zero default lamports_per_byte")
 	}
 
-	want := Rent{
-		LamportsPerByteYear: 123,
-		ExemptionThreshold:  4.5,
-		BurnPercent:         11,
+	want := &sysvar.Rent{
+		LamportsPerByte:    123,
+		ExemptionThreshold: 4.5,
+		BurnPercent:        11,
 	}
 	if err := svm.SetRent(want); err != nil {
 		t.Fatalf("SetRent: %v", err)
@@ -642,7 +645,7 @@ func TestRentRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Rent: %v", err)
 	}
-	if got != want {
+	if *got != *want {
 		t.Fatalf("rent mismatch\n got=%+v\nwant=%+v", got, want)
 	}
 }
@@ -654,7 +657,7 @@ func TestEpochScheduleRoundtrip(t *testing.T) {
 	}
 	defer svm.Close()
 
-	want := EpochSchedule{
+	want := &sysvar.EpochSchedule{
 		SlotsPerEpoch:            8192,
 		LeaderScheduleSlotOffset: 8192,
 		Warmup:                   true,
@@ -668,7 +671,7 @@ func TestEpochScheduleRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EpochSchedule: %v", err)
 	}
-	if got != want {
+	if *got != *want {
 		t.Fatalf("schedule mismatch\n got=%+v\nwant=%+v", got, want)
 	}
 }
@@ -680,7 +683,7 @@ func TestLastRestartSlotRoundtrip(t *testing.T) {
 	}
 	defer svm.Close()
 
-	const want = uint64(123456789)
+	want := &sysvar.LastRestartSlot{LastRestartSlot: 123456789}
 	if err := svm.SetLastRestartSlot(want); err != nil {
 		t.Fatalf("SetLastRestartSlot: %v", err)
 	}
@@ -688,8 +691,8 @@ func TestLastRestartSlotRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LastRestartSlot: %v", err)
 	}
-	if got != want {
-		t.Fatalf("last_restart_slot = %d, want %d", got, want)
+	if got.LastRestartSlot != want.LastRestartSlot {
+		t.Fatalf("last_restart_slot = %d, want %d", got.LastRestartSlot, want.LastRestartSlot)
 	}
 }
 
@@ -805,19 +808,18 @@ func TestSimulateLegacyTransactionSuccess(t *testing.T) {
 	}
 	var sawPayer, sawRecipient bool
 	for _, p := range posts {
-		defer p.Account.Close()
 		switch {
 		case p.Address.Equals(payer):
 			sawPayer = true
-			if p.Account.Lamports() >= fund {
+			if p.Account.Lamports >= fund {
 				t.Fatalf("simulated payer lamports %d should be < fund %d",
-					p.Account.Lamports(), fund)
+					p.Account.Lamports, fund)
 			}
 		case p.Address.Equals(recipient):
 			sawRecipient = true
-			if p.Account.Lamports() != xfer {
+			if p.Account.Lamports != xfer {
 				t.Fatalf("simulated recipient lamports = %d, want %d",
-					p.Account.Lamports(), xfer)
+					p.Account.Lamports, xfer)
 			}
 		}
 	}
@@ -913,9 +915,6 @@ func TestSimulateVersionedTransactionAcceptsLegacyBytes(t *testing.T) {
 	}
 	if len(posts) == 0 {
 		t.Fatal("expected post_accounts")
-	}
-	for _, p := range posts {
-		p.Account.Close()
 	}
 }
 
@@ -1194,13 +1193,12 @@ func TestEpochRewardsRoundtrip(t *testing.T) {
 	for i := range blockhash {
 		blockhash[i] = byte(i + 1)
 	}
-	// A value that overflows u64 so we exercise both halves.
-	want := EpochRewards{
+	// A value that overflows u64 so we exercise both halves of the u128.
+	want := &sysvar.EpochRewards{
 		DistributionStartingBlockHeight: 1000,
 		NumPartitions:                   4,
 		ParentBlockhash:                 blockhash,
-		TotalPointsLo:                   0xDEAD_BEEF_CAFE_F00D,
-		TotalPointsHi:                   0x1234_5678_9ABC_DEF0,
+		TotalPoints:                     bin.Uint128{Lo: 0xDEAD_BEEF_CAFE_F00D, Hi: 0x1234_5678_9ABC_DEF0},
 		TotalRewards:                    9999,
 		DistributedRewards:              123,
 		Active:                          true,
@@ -1212,7 +1210,14 @@ func TestEpochRewardsRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EpochRewards: %v", err)
 	}
-	if got != want {
+	if got.DistributionStartingBlockHeight != want.DistributionStartingBlockHeight ||
+		got.NumPartitions != want.NumPartitions ||
+		got.ParentBlockhash != want.ParentBlockhash ||
+		got.TotalPoints.Lo != want.TotalPoints.Lo ||
+		got.TotalPoints.Hi != want.TotalPoints.Hi ||
+		got.TotalRewards != want.TotalRewards ||
+		got.DistributedRewards != want.DistributedRewards ||
+		got.Active != want.Active {
 		t.Fatalf("epoch_rewards mismatch\n got=%+v\nwant=%+v", got, want)
 	}
 }
@@ -1233,7 +1238,7 @@ func TestSlotHashesRoundtrip(t *testing.T) {
 	}
 	// SlotHashes is kept in descending-slot order internally, so supply in
 	// that order to make equality assertions stable.
-	want := []SlotHash{
+	want := sysvar.SlotHashes{
 		{Slot: 42, Hash: mkhash(0x40)},
 		{Slot: 41, Hash: mkhash(0x30)},
 		{Slot: 40, Hash: mkhash(0x20)},
@@ -1262,9 +1267,9 @@ func TestStakeHistoryRoundtrip(t *testing.T) {
 	}
 	defer svm.Close()
 
-	items := []StakeHistoryItem{
-		{Epoch: 100, Effective: 1_000, Activating: 200, Deactivating: 50},
-		{Epoch: 101, Effective: 2_000, Activating: 100, Deactivating: 25},
+	items := sysvar.StakeHistory{
+		{Epoch: 100, Entry: sysvar.StakeHistoryEntry{Effective: 1_000, Activating: 200, Deactivating: 50}},
+		{Epoch: 101, Entry: sysvar.StakeHistoryEntry{Effective: 2_000, Activating: 100, Deactivating: 25}},
 	}
 	if err := svm.SetStakeHistory(items); err != nil {
 		t.Fatalf("SetStakeHistory: %v", err)
@@ -1274,7 +1279,7 @@ func TestStakeHistoryRoundtrip(t *testing.T) {
 		t.Fatalf("StakeHistory: %v", err)
 	}
 	// StakeHistory orders entries descending by epoch internally.
-	seen := map[uint64]StakeHistoryItem{}
+	seen := map[uint64]sysvar.StakeHistoryItem{}
 	for _, it := range got {
 		seen[it.Epoch] = it
 	}
@@ -1289,35 +1294,137 @@ func TestStakeHistoryRoundtrip(t *testing.T) {
 	}
 }
 
-func TestSlotHistoryHandle(t *testing.T) {
-	sh, err := NewSlotHistory()
+func TestStakeHistoryCanonicalized(t *testing.T) {
+	svm, err := New()
 	if err != nil {
-		t.Fatalf("NewSlotHistory: %v", err)
+		t.Fatalf("New: %v", err)
 	}
-	defer sh.Close()
+	defer svm.Close()
+
+	// Supply epochs out of order; SetStakeHistory must install them in the
+	// canonical descending order in-program StakeHistory lookups rely on.
+	items := sysvar.StakeHistory{
+		{Epoch: 100, Entry: sysvar.StakeHistoryEntry{Effective: 1}},
+		{Epoch: 102, Entry: sysvar.StakeHistoryEntry{Effective: 3}},
+		{Epoch: 101, Entry: sysvar.StakeHistoryEntry{Effective: 2}},
+	}
+	if err := svm.SetStakeHistory(items); err != nil {
+		t.Fatalf("SetStakeHistory: %v", err)
+	}
+	got, err := svm.StakeHistory()
+	if err != nil {
+		t.Fatalf("StakeHistory: %v", err)
+	}
+	if len(got) != 3 || got[0].Epoch != 102 {
+		t.Fatalf("expected newest epoch (102) first, got %+v", got)
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i-1].Epoch <= got[i].Epoch {
+			t.Fatalf("StakeHistory not descending: %+v", got)
+		}
+	}
+
+	// Over-cap input is truncated to the sysvar maximum (newest kept).
+	var big sysvar.StakeHistory
+	for e := uint64(0); e < sysvar.StakeHistoryMaxEntries+50; e++ {
+		big = append(big, sysvar.StakeHistoryItem{Epoch: e})
+	}
+	if err := svm.SetStakeHistory(big); err != nil {
+		t.Fatalf("SetStakeHistory(big): %v", err)
+	}
+	got, err = svm.StakeHistory()
+	if err != nil {
+		t.Fatalf("StakeHistory(big): %v", err)
+	}
+	if len(got) != sysvar.StakeHistoryMaxEntries {
+		t.Fatalf("len = %d, want cap %d", len(got), sysvar.StakeHistoryMaxEntries)
+	}
+}
+
+func TestSlotHashesCanonicalized(t *testing.T) {
+	svm, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer svm.Close()
+
+	var h solana.Hash
+	// Supply slots out of order; SetSlotHashes must install them descending.
+	items := sysvar.SlotHashes{
+		{Slot: 40, Hash: h},
+		{Slot: 42, Hash: h},
+		{Slot: 41, Hash: h},
+	}
+	if err := svm.SetSlotHashes(items); err != nil {
+		t.Fatalf("SetSlotHashes: %v", err)
+	}
+	got, err := svm.SlotHashes()
+	if err != nil {
+		t.Fatalf("SlotHashes: %v", err)
+	}
+	if len(got) != 3 || got[0].Slot != 42 {
+		t.Fatalf("expected newest slot (42) first, got %+v", got)
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i-1].Slot <= got[i].Slot {
+			t.Fatalf("SlotHashes not descending: %+v", got)
+		}
+	}
+}
+
+func TestSysvarSettersRejectNil(t *testing.T) {
+	svm, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer svm.Close()
+
+	// Each pointer setter must return an error, not panic, on a nil argument.
+	if err := svm.SetClock(nil); err == nil {
+		t.Error("SetClock(nil): expected error")
+	}
+	if err := svm.SetRent(nil); err == nil {
+		t.Error("SetRent(nil): expected error")
+	}
+	if err := svm.SetEpochSchedule(nil); err == nil {
+		t.Error("SetEpochSchedule(nil): expected error")
+	}
+	if err := svm.SetEpochRewards(nil); err == nil {
+		t.Error("SetEpochRewards(nil): expected error")
+	}
+	if err := svm.SetLastRestartSlot(nil); err == nil {
+		t.Error("SetLastRestartSlot(nil): expected error")
+	}
+	if err := svm.SetSlotHistory(nil); err == nil {
+		t.Error("SetSlotHistory(nil): expected error")
+	}
+}
+
+func TestSlotHistoryOps(t *testing.T) {
+	sh := sysvar.NewSlotHistory()
 
 	// Default: next_slot 1, only slot 0 is recorded.
-	if got := sh.NextSlot(); got != 1 {
-		t.Fatalf("next_slot = %d, want 1", got)
+	if sh.NextSlot != 1 {
+		t.Fatalf("next_slot = %d, want 1", sh.NextSlot)
 	}
-	if c := sh.Check(0); c != SlotHistoryFound {
-		t.Fatalf("Check(0) = %d, want Found", c)
+	if c := sh.Check(0); c != sysvar.SlotHistoryFound {
+		t.Fatalf("Check(0) = %v, want Found", c)
 	}
 	// An un-added slot below next_slot is NotFound.
-	if c := sh.Check(1); c != SlotHistoryNotFound && c != SlotHistoryFuture {
-		t.Fatalf("Check(1) = %d, want NotFound or Future", c)
+	if c := sh.Check(1); c != sysvar.SlotHistoryNotFound && c != sysvar.SlotHistoryFuture {
+		t.Fatalf("Check(1) = %v, want NotFound or Future", c)
 	}
 
 	sh.Add(100)
 	sh.Add(200)
-	if c := sh.Check(100); c != SlotHistoryFound {
-		t.Fatalf("Check(100) = %d, want Found", c)
+	if c := sh.Check(100); c != sysvar.SlotHistoryFound {
+		t.Fatalf("Check(100) = %v, want Found", c)
 	}
-	if c := sh.Check(101); c != SlotHistoryNotFound {
-		t.Fatalf("Check(101) = %d, want NotFound", c)
+	if c := sh.Check(101); c != sysvar.SlotHistoryNotFound {
+		t.Fatalf("Check(101) = %v, want NotFound", c)
 	}
-	if c := sh.Check(sh.NextSlot() + 1); c != SlotHistoryFuture {
-		t.Fatalf("Check(future) = %d, want Future", c)
+	if c := sh.Check(sh.NextSlot + 1); c != sysvar.SlotHistoryFuture {
+		t.Fatalf("Check(future) = %v, want Future", c)
 	}
 }
 
@@ -1332,14 +1439,10 @@ func TestSlotHistoryGetSetFromSVM(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SlotHistory: %v", err)
 	}
-	defer sh.Close()
 
-	// Round-trip via set + re-get.
+	// Round-trip via set + re-get. Add(600) advances NextSlot to 601.
 	sh.Add(500)
 	sh.Add(600)
-	if err := sh.SetNextSlot(601); err != nil {
-		t.Fatalf("SetNextSlot: %v", err)
-	}
 	if err := svm.SetSlotHistory(sh); err != nil {
 		t.Fatalf("SetSlotHistory: %v", err)
 	}
@@ -1347,12 +1450,14 @@ func TestSlotHistoryGetSetFromSVM(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SlotHistory (roundtrip): %v", err)
 	}
-	defer got.Close()
-	if c := got.Check(500); c != SlotHistoryFound {
-		t.Fatalf("after roundtrip Check(500) = %d, want Found", c)
+	if c := got.Check(500); c != sysvar.SlotHistoryFound {
+		t.Fatalf("after roundtrip Check(500) = %v, want Found", c)
 	}
-	if got.NextSlot() != 601 {
-		t.Fatalf("after roundtrip next_slot = %d, want 601", got.NextSlot())
+	if c := got.Check(600); c != sysvar.SlotHistoryFound {
+		t.Fatalf("after roundtrip Check(600) = %v, want Found", c)
+	}
+	if got.NextSlot != 601 {
+		t.Fatalf("after roundtrip next_slot = %d, want 601", got.NextSlot)
 	}
 }
 
@@ -1538,14 +1643,13 @@ func TestWithNativeMints(t *testing.T) {
 	if a == nil {
 		t.Fatal("expected WSOL mint account after WithNativeMints")
 	}
-	defer a.Close()
 
-	if len(a.Data()) != 82 {
-		t.Fatalf("mint data len = %d, want 82", len(a.Data()))
+	if len(a.Data) != 82 {
+		t.Fatalf("mint data len = %d, want 82", len(a.Data))
 	}
 	splToken := solana.MustPublicKeyFromBase58("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
-	if !a.Owner().Equals(splToken) {
-		t.Fatalf("mint owner = %s, want %s", a.Owner(), splToken)
+	if !a.Owner.Equals(splToken) {
+		t.Fatalf("mint owner = %s, want %s", a.Owner, splToken)
 	}
 }
 
@@ -1572,12 +1676,11 @@ func TestAddProgramWithLoader(t *testing.T) {
 	if acct == nil {
 		t.Fatal("program account missing after AddProgramWithLoader")
 	}
-	defer acct.Close()
-	if !acct.Executable() {
+	if !acct.Executable {
 		t.Fatal("program account should be executable")
 	}
-	if !acct.Owner().Equals(loader) {
-		t.Fatalf("owner = %s, want %s", acct.Owner(), loader)
+	if !acct.Owner.Equals(loader) {
+		t.Fatalf("owner = %s, want %s", acct.Owner, loader)
 	}
 }
 

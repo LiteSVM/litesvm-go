@@ -34,12 +34,16 @@ package litesvm
 import "C"
 
 import (
+	"crypto/ed25519"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"runtime"
 	"unsafe"
 
 	"github.com/gagliardetto/solana-go"
+	"github.com/gagliardetto/solana-go/programs/system"
+	"github.com/gagliardetto/solana-go/sysvar"
 )
 
 // ErrLiteSVM is the sentinel that wraps every error returned by this
@@ -153,15 +157,12 @@ func (s *LiteSVM) MinimumBalanceForRentExemption(dataLen int) (uint64, error) {
 	if dataLen < 0 {
 		return 0, errors.New("dataLen must be >= 0")
 	}
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	v := C.litesvm_minimum_balance_for_rent_exemption(s.h, C.size_t(dataLen))
-	// Rust side returns u64::MAX on error.
-	if v == ^C.uint64_t(0) {
-		return 0, lastErrorLocked("minimum_balance_for_rent_exemption")
+	// Computed natively from the Rent sysvar (no dedicated FFI entry point).
+	r, err := s.Rent()
+	if err != nil {
+		return 0, err
 	}
-	return uint64(v), nil
+	return r.MinimumBalance(uint64(dataLen)), nil
 }
 
 // Version returns the version string reported by the Rust crate.
@@ -317,7 +318,7 @@ func (o *TxOutcome) ReturnData() (solana.PublicKey, []byte, bool) {
 }
 
 // PostAccount is a (address, account) pair returned by a successful
-// simulation. Close the Account when done.
+// simulation.
 type PostAccount struct {
 	Address solana.PublicKey
 	Account *Account
@@ -430,14 +431,23 @@ func (o *TxOutcome) PostAccounts() ([]PostAccount, error) {
 	out := make([]PostAccount, 0, n)
 	for i := range n {
 		var addr solana.PublicKey
-		h := C.litesvm_tx_outcome_post_account_at(
-			o.h, C.size_t(i), (*C.uint8_t)(unsafe.Pointer(&addr[0])),
-		)
-		if h == nil {
-			return nil, lastErrorLocked(fmt.Sprintf("post_account_at(%d) returned null", i))
+		addrPtr := (*C.uint8_t)(unsafe.Pointer(&addr[0]))
+		var written C.size_t
+		if rc := C.litesvm_tx_outcome_post_account_at(o.h, C.size_t(i), addrPtr, nil, 0, &written); rc != 0 {
+			return nil, lastErrorLocked(fmt.Sprintf("post_account_at(%d) rc=%d", i, rc))
 		}
-		a := &Account{h: h}
-		runtime.SetFinalizer(a, (*Account).Close)
+		buf := make([]byte, int(written))
+		var bufPtr *C.uint8_t
+		if len(buf) > 0 {
+			bufPtr = (*C.uint8_t)(unsafe.Pointer(&buf[0]))
+		}
+		if rc := C.litesvm_tx_outcome_post_account_at(o.h, C.size_t(i), addrPtr, bufPtr, C.size_t(len(buf)), &written); rc != 0 {
+			return nil, lastErrorLocked(fmt.Sprintf("post_account_at(%d) copy rc=%d", i, rc))
+		}
+		a, err := unmarshalAccount(buf[:int(written)])
+		if err != nil {
+			return nil, fmt.Errorf("post_account_at(%d): %w", i, err)
+		}
 		out = append(out, PostAccount{Address: addr, Account: a})
 	}
 	return out, nil
@@ -706,103 +716,49 @@ func (s *LiteSVM) AddProgramWithLoader(programID solana.PublicKey, bytes []byte,
 	return nil
 }
 
-// Account is an opaque handle around a Solana account (lamports, data,
-// owner, executable, rent_epoch). Close when done.
+// Account is a Solana account value: lamports, data, owner, executable, and
+// rent epoch. It is a plain value type — construct one with a struct literal.
 type Account struct {
-	h *C.LiteSvmAccount
+	Lamports   uint64
+	Data       []byte
+	Owner      solana.PublicKey
+	Executable bool
+	RentEpoch  uint64
 }
 
-// NewAccount constructs an Account handle.
-func NewAccount(lamports uint64, data []byte, owner solana.PublicKey, executable bool, rentEpoch uint64) (*Account, error) {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
+// accountHeaderLen is the fixed-header size of the account wire encoding:
+// lamports(8) + rent_epoch(8) + executable(1) + owner(32).
+const accountHeaderLen = 8 + 8 + 1 + 32
 
-	var dataPtr *C.uint8_t
-	if len(data) > 0 {
-		dataPtr = (*C.uint8_t)(unsafe.Pointer(&data[0]))
+// marshal encodes the account in the wire format the FFI expects:
+// [lamports u64][rent_epoch u64][executable u8][owner 32][data...] (LE).
+func (a *Account) marshal() []byte {
+	buf := make([]byte, accountHeaderLen+len(a.Data))
+	binary.LittleEndian.PutUint64(buf[0:8], a.Lamports)
+	binary.LittleEndian.PutUint64(buf[8:16], a.RentEpoch)
+	if a.Executable {
+		buf[16] = 1
 	}
-	h := C.litesvm_account_new(
-		C.uint64_t(lamports),
-		dataPtr, C.size_t(len(data)),
-		(*C.uint8_t)(unsafe.Pointer(&owner[0])),
-		C.bool(executable),
-		C.uint64_t(rentEpoch),
-	)
-	if h == nil {
-		return nil, lastErrorLocked("account_new")
+	copy(buf[17:accountHeaderLen], a.Owner[:])
+	copy(buf[accountHeaderLen:], a.Data)
+	return buf
+}
+
+// unmarshalAccount decodes the wire format produced by the FFI.
+func unmarshalAccount(b []byte) (*Account, error) {
+	if len(b) < accountHeaderLen {
+		return nil, fmt.Errorf("account: short buffer (%d bytes)", len(b))
 	}
-	a := &Account{h: h}
-	runtime.SetFinalizer(a, (*Account).Close)
+	a := &Account{
+		Lamports:   binary.LittleEndian.Uint64(b[0:8]),
+		RentEpoch:  binary.LittleEndian.Uint64(b[8:16]),
+		Executable: b[16] != 0,
+	}
+	copy(a.Owner[:], b[17:accountHeaderLen])
+	if len(b) > accountHeaderLen {
+		a.Data = append([]byte(nil), b[accountHeaderLen:]...)
+	}
 	return a, nil
-}
-
-// Close releases the handle. Safe to call more than once.
-// Not safe to call concurrently with other methods on the same handle.
-func (a *Account) Close() {
-	if a == nil || a.h == nil {
-		return
-	}
-	C.litesvm_account_free(a.h)
-	a.h = nil
-	runtime.SetFinalizer(a, nil)
-}
-
-// Lamports returns the lamports of the account.
-func (a *Account) Lamports() uint64 {
-	if a == nil || a.h == nil {
-		return 0
-	}
-	return uint64(C.litesvm_account_lamports(a.h))
-}
-
-// RentEpoch returns the rent epoch of the account.
-func (a *Account) RentEpoch() uint64 {
-	if a == nil || a.h == nil {
-		return 0
-	}
-	return uint64(C.litesvm_account_rent_epoch(a.h))
-}
-
-// Executable reports whether the account is executable.
-func (a *Account) Executable() bool {
-	if a == nil || a.h == nil {
-		return false
-	}
-	return C.litesvm_account_executable(a.h) == 1
-}
-
-// Owner returns the account owner program address.
-func (a *Account) Owner() solana.PublicKey {
-	var out solana.PublicKey
-	if a == nil || a.h == nil {
-		return out
-	}
-	C.litesvm_account_owner(a.h, (*C.uint8_t)(unsafe.Pointer(&out[0])))
-	return out
-}
-
-// Data returns a copy of the account data.
-func (a *Account) Data() []byte {
-	if a == nil || a.h == nil {
-		return nil
-	}
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	n := int(C.litesvm_account_data_len(a.h))
-	if n == 0 {
-		return nil
-	}
-	buf := make([]byte, n)
-	got := int(C.litesvm_account_data_copy(
-		a.h,
-		(*C.uint8_t)(unsafe.Pointer(&buf[0])),
-		C.size_t(len(buf)),
-	))
-	if got > len(buf) {
-		got = len(buf)
-	}
-	return buf[:got]
 }
 
 // GetAccount returns the account at `pubkey`, or nil if it does not exist.
@@ -810,31 +766,41 @@ func (s *LiteSVM) GetAccount(pubkey solana.PublicKey) *Account {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	h := C.litesvm_get_account(s.h, (*C.uint8_t)(unsafe.Pointer(&pubkey[0])))
-	if h == nil {
+	pkPtr := (*C.uint8_t)(unsafe.Pointer(&pubkey[0]))
+	var written C.size_t
+	// Probe: rc 0 = found (length in written), 1 = not found, <0 = error.
+	if rc := C.litesvm_get_account(s.h, pkPtr, nil, 0, &written); rc != 0 {
 		return nil
 	}
-	a := &Account{h: h}
-	runtime.SetFinalizer(a, (*Account).Close)
+	buf := make([]byte, int(written))
+	var bufPtr *C.uint8_t
+	if len(buf) > 0 {
+		bufPtr = (*C.uint8_t)(unsafe.Pointer(&buf[0]))
+	}
+	if rc := C.litesvm_get_account(s.h, pkPtr, bufPtr, C.size_t(len(buf)), &written); rc != 0 {
+		return nil
+	}
+	a, err := unmarshalAccount(buf[:int(written)])
+	if err != nil {
+		return nil
+	}
 	return a
 }
 
-// SetAccount stores a copy of `acct` at `pubkey`. Caller retains ownership
-// of `acct` and must still Close it when done.
+// SetAccount stores `acct` at `pubkey`.
 func (s *LiteSVM) SetAccount(pubkey solana.PublicKey, acct *Account) error {
 	if acct == nil {
 		return errors.New("SetAccount: nil account")
 	}
-	if acct.h == nil {
-		return errors.New("SetAccount: account is closed")
-	}
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
+	data := acct.marshal()
 	rc := C.litesvm_set_account(
 		s.h,
 		(*C.uint8_t)(unsafe.Pointer(&pubkey[0])),
-		acct.h,
+		(*C.uint8_t)(unsafe.Pointer(&data[0])),
+		C.size_t(len(data)),
 	)
 	if rc != 0 {
 		return lastErrorLocked(fmt.Sprintf("set_account rc=%d", rc))
@@ -886,516 +852,272 @@ func (s *LiteSVM) AddProgramFromFile(programID solana.PublicKey, path string) er
 // ---------------------------------------------------------------------------
 // Sysvars
 //
-// solana-go does not expose struct types for Clock / Rent / EpochSchedule
-// (only their well-known account pubkeys via solana.SysVarClockPubkey etc.),
-// so we keep our own plain-struct mirrors that match the Solana source.
+// The FFI exchanges only bincode-encoded sysvar account data; the typed structs
+// and their codecs live in solana-go's sysvar package. getSysvar / setSysvar
+// are the generic byte-exchange primitives, and the typed accessors below wrap
+// them with the matching sysvar account id and (de)serializer.
 // ---------------------------------------------------------------------------
 
-// Clock mirrors solana_clock::Clock.
-type Clock struct {
-	Slot                uint64
-	EpochStartTimestamp int64
-	Epoch               uint64
-	LeaderScheduleEpoch uint64
-	UnixTimestamp       int64
+// getSysvar returns the bincode-encoded account data of the sysvar identified
+// by its account pubkey `id`, using the probe-then-copy FFI convention.
+func (s *LiteSVM) getSysvar(id solana.PublicKey) ([]byte, error) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	idPtr := (*C.uint8_t)(unsafe.Pointer(&id[0]))
+	var written C.size_t
+	rc := C.litesvm_get_sysvar(s.h, idPtr, nil, 0, &written)
+	if rc != 0 {
+		return nil, lastErrorLocked(fmt.Sprintf("get_sysvar probe rc=%d", rc))
+	}
+	if written == 0 {
+		return nil, nil
+	}
+	buf := make([]byte, int(written))
+	rc = C.litesvm_get_sysvar(s.h, idPtr, (*C.uint8_t)(unsafe.Pointer(&buf[0])), C.size_t(len(buf)), &written)
+	if rc != 0 {
+		return nil, lastErrorLocked(fmt.Sprintf("get_sysvar rc=%d", rc))
+	}
+	if int(written) != len(buf) {
+		return nil, fmt.Errorf("get_sysvar: wrote %d, expected %d", int(written), len(buf))
+	}
+	return buf, nil
 }
 
-// Rent mirrors solana_rent::Rent.
-type Rent struct {
-	LamportsPerByteYear uint64
-	ExemptionThreshold  float64
-	BurnPercent         uint8
-}
+// setSysvar installs `data` (bincode-encoded account data) as the sysvar
+// identified by `id`, refreshing the bank's sysvar cache.
+func (s *LiteSVM) setSysvar(id solana.PublicKey, data []byte) error {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 
-// EpochSchedule mirrors solana_epoch_schedule::EpochSchedule.
-type EpochSchedule struct {
-	SlotsPerEpoch            uint64
-	LeaderScheduleSlotOffset uint64
-	Warmup                   bool
-	FirstNormalEpoch         uint64
-	FirstNormalSlot          uint64
+	var dataPtr *C.uint8_t
+	if len(data) > 0 {
+		dataPtr = (*C.uint8_t)(unsafe.Pointer(&data[0]))
+	}
+	rc := C.litesvm_set_sysvar(s.h, (*C.uint8_t)(unsafe.Pointer(&id[0])), dataPtr, C.size_t(len(data)))
+	if rc != 0 {
+		return lastErrorLocked(fmt.Sprintf("set_sysvar rc=%d", rc))
+	}
+	return nil
 }
 
 // Clock returns the current Clock sysvar.
-func (s *LiteSVM) Clock() (Clock, error) {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	var c C.LiteSvmClock
-	rc := C.litesvm_get_clock(s.h, &c)
-	if rc != 0 {
-		return Clock{}, lastErrorLocked(fmt.Sprintf("get_clock rc=%d", rc))
+func (s *LiteSVM) Clock() (*sysvar.Clock, error) {
+	b, err := s.getSysvar(sysvar.ClockID)
+	if err != nil {
+		return nil, err
 	}
-	return Clock{
-		Slot:                uint64(c.slot),
-		EpochStartTimestamp: int64(c.epoch_start_timestamp),
-		Epoch:               uint64(c.epoch),
-		LeaderScheduleEpoch: uint64(c.leader_schedule_epoch),
-		UnixTimestamp:       int64(c.unix_timestamp),
-	}, nil
+	return sysvar.DecodeClock(b)
 }
 
-// SetClock replaces the current Clock sysvar.
-func (s *LiteSVM) SetClock(c Clock) error {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	cc := C.LiteSvmClock{
-		slot:                  C.uint64_t(c.Slot),
-		epoch_start_timestamp: C.int64_t(c.EpochStartTimestamp),
-		epoch:                 C.uint64_t(c.Epoch),
-		leader_schedule_epoch: C.uint64_t(c.LeaderScheduleEpoch),
-		unix_timestamp:        C.int64_t(c.UnixTimestamp),
+// SetClock replaces the Clock sysvar.
+func (s *LiteSVM) SetClock(c *sysvar.Clock) error {
+	if c == nil {
+		return errors.New("SetClock: nil clock")
 	}
-	rc := C.litesvm_set_clock(s.h, &cc)
-	if rc != 0 {
-		return lastErrorLocked(fmt.Sprintf("set_clock rc=%d", rc))
+	b, err := c.MarshalBinary()
+	if err != nil {
+		return fmt.Errorf("SetClock: marshal: %w", err)
 	}
-	return nil
+	return s.setSysvar(sysvar.ClockID, b)
 }
 
 // Rent returns the current Rent sysvar.
-func (s *LiteSVM) Rent() (Rent, error) {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	var r C.LiteSvmRent
-	rc := C.litesvm_get_rent(s.h, &r)
-	if rc != 0 {
-		return Rent{}, lastErrorLocked(fmt.Sprintf("get_rent rc=%d", rc))
+func (s *LiteSVM) Rent() (*sysvar.Rent, error) {
+	b, err := s.getSysvar(sysvar.RentID)
+	if err != nil {
+		return nil, err
 	}
-	return Rent{
-		LamportsPerByteYear: uint64(r.lamports_per_byte_year),
-		ExemptionThreshold:  float64(r.exemption_threshold),
-		BurnPercent:         uint8(r.burn_percent),
-	}, nil
+	return sysvar.DecodeRent(b)
 }
 
-// SetRent replaces the current Rent sysvar.
-func (s *LiteSVM) SetRent(r Rent) error {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	cr := C.LiteSvmRent{
-		lamports_per_byte_year: C.uint64_t(r.LamportsPerByteYear),
-		exemption_threshold:    C.double(r.ExemptionThreshold),
-		burn_percent:           C.uint8_t(r.BurnPercent),
+// SetRent replaces the Rent sysvar.
+func (s *LiteSVM) SetRent(r *sysvar.Rent) error {
+	if r == nil {
+		return errors.New("SetRent: nil rent")
 	}
-	rc := C.litesvm_set_rent(s.h, &cr)
-	if rc != 0 {
-		return lastErrorLocked(fmt.Sprintf("set_rent rc=%d", rc))
+	b, err := r.MarshalBinary()
+	if err != nil {
+		return fmt.Errorf("SetRent: marshal: %w", err)
 	}
-	return nil
+	return s.setSysvar(sysvar.RentID, b)
 }
 
 // EpochSchedule returns the current EpochSchedule sysvar.
-func (s *LiteSVM) EpochSchedule() (EpochSchedule, error) {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	var e C.LiteSvmEpochSchedule
-	rc := C.litesvm_get_epoch_schedule(s.h, &e)
-	if rc != 0 {
-		return EpochSchedule{}, lastErrorLocked(fmt.Sprintf("get_epoch_schedule rc=%d", rc))
+func (s *LiteSVM) EpochSchedule() (*sysvar.EpochSchedule, error) {
+	b, err := s.getSysvar(sysvar.EpochScheduleID)
+	if err != nil {
+		return nil, err
 	}
-	return EpochSchedule{
-		SlotsPerEpoch:            uint64(e.slots_per_epoch),
-		LeaderScheduleSlotOffset: uint64(e.leader_schedule_slot_offset),
-		Warmup:                   e.warmup != 0,
-		FirstNormalEpoch:         uint64(e.first_normal_epoch),
-		FirstNormalSlot:          uint64(e.first_normal_slot),
-	}, nil
+	return sysvar.DecodeEpochSchedule(b)
 }
 
-// SetEpochSchedule replaces the current EpochSchedule sysvar.
-func (s *LiteSVM) SetEpochSchedule(e EpochSchedule) error {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	ce := C.LiteSvmEpochSchedule{
-		slots_per_epoch:             C.uint64_t(e.SlotsPerEpoch),
-		leader_schedule_slot_offset: C.uint64_t(e.LeaderScheduleSlotOffset),
-		first_normal_epoch:          C.uint64_t(e.FirstNormalEpoch),
-		first_normal_slot:           C.uint64_t(e.FirstNormalSlot),
+// SetEpochSchedule replaces the EpochSchedule sysvar.
+func (s *LiteSVM) SetEpochSchedule(e *sysvar.EpochSchedule) error {
+	if e == nil {
+		return errors.New("SetEpochSchedule: nil schedule")
 	}
-	if e.Warmup {
-		ce.warmup = 1
+	b, err := e.MarshalBinary()
+	if err != nil {
+		return fmt.Errorf("SetEpochSchedule: marshal: %w", err)
 	}
-	rc := C.litesvm_set_epoch_schedule(s.h, &ce)
-	if rc != 0 {
-		return lastErrorLocked(fmt.Sprintf("set_epoch_schedule rc=%d", rc))
-	}
-	return nil
-}
-
-// LastRestartSlot returns the last-restart-slot sysvar.
-func (s *LiteSVM) LastRestartSlot() (uint64, error) {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	var out C.uint64_t
-	rc := C.litesvm_get_last_restart_slot(s.h, &out)
-	if rc != 0 {
-		return 0, lastErrorLocked(fmt.Sprintf("get_last_restart_slot rc=%d", rc))
-	}
-	return uint64(out), nil
-}
-
-// SetLastRestartSlot replaces the last-restart-slot sysvar.
-func (s *LiteSVM) SetLastRestartSlot(slot uint64) error {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	rc := C.litesvm_set_last_restart_slot(s.h, C.uint64_t(slot))
-	if rc != 0 {
-		return lastErrorLocked(fmt.Sprintf("set_last_restart_slot rc=%d", rc))
-	}
-	return nil
-}
-
-// EpochRewards mirrors solana_epoch_rewards::EpochRewards. total_points is a
-// u128 on the Solana side; we surface both halves explicitly so Go callers
-// don't need a u128 library. For values that fit in 64 bits, TotalPointsHi
-// is 0 and TotalPointsLo is the value.
-type EpochRewards struct {
-	DistributionStartingBlockHeight uint64
-	NumPartitions                   uint64
-	ParentBlockhash                 solana.Hash
-	TotalPointsLo                   uint64
-	TotalPointsHi                   uint64
-	TotalRewards                    uint64
-	DistributedRewards              uint64
-	Active                          bool
+	return s.setSysvar(sysvar.EpochScheduleID, b)
 }
 
 // EpochRewards returns the current EpochRewards sysvar.
-func (s *LiteSVM) EpochRewards() (EpochRewards, error) {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	var r C.LiteSvmEpochRewards
-	rc := C.litesvm_get_epoch_rewards(s.h, &r)
-	if rc != 0 {
-		return EpochRewards{}, lastErrorLocked(fmt.Sprintf("get_epoch_rewards rc=%d", rc))
+func (s *LiteSVM) EpochRewards() (*sysvar.EpochRewards, error) {
+	b, err := s.getSysvar(sysvar.EpochRewardsID)
+	if err != nil {
+		return nil, err
 	}
-	return EpochRewards{
-		DistributionStartingBlockHeight: uint64(r.distribution_starting_block_height),
-		NumPartitions:                   uint64(r.num_partitions),
-		// C.uint8_t and byte have the same representation on every supported
-		// platform, so a layout-preserving cast replaces a 32-element loop.
-		ParentBlockhash:    *(*[32]byte)(unsafe.Pointer(&r.parent_blockhash)),
-		TotalPointsLo:      uint64(r.total_points_lo),
-		TotalPointsHi:      uint64(r.total_points_hi),
-		TotalRewards:       uint64(r.total_rewards),
-		DistributedRewards: uint64(r.distributed_rewards),
-		Active:             r.active != 0,
-	}, nil
+	return sysvar.DecodeEpochRewards(b)
 }
 
 // SetEpochRewards replaces the EpochRewards sysvar.
-func (s *LiteSVM) SetEpochRewards(e EpochRewards) error {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	cr := C.LiteSvmEpochRewards{
-		distribution_starting_block_height: C.uint64_t(e.DistributionStartingBlockHeight),
-		num_partitions:                     C.uint64_t(e.NumPartitions),
-		total_points_lo:                    C.uint64_t(e.TotalPointsLo),
-		total_points_hi:                    C.uint64_t(e.TotalPointsHi),
-		total_rewards:                      C.uint64_t(e.TotalRewards),
-		distributed_rewards:                C.uint64_t(e.DistributedRewards),
+func (s *LiteSVM) SetEpochRewards(e *sysvar.EpochRewards) error {
+	if e == nil {
+		return errors.New("SetEpochRewards: nil rewards")
 	}
-	if e.Active {
-		cr.active = 1
+	b, err := e.MarshalBinary()
+	if err != nil {
+		return fmt.Errorf("SetEpochRewards: marshal: %w", err)
 	}
-	*(*[32]byte)(unsafe.Pointer(&cr.parent_blockhash)) = e.ParentBlockhash
-	rc := C.litesvm_set_epoch_rewards(s.h, &cr)
-	if rc != 0 {
-		return lastErrorLocked(fmt.Sprintf("set_epoch_rewards rc=%d", rc))
-	}
-	return nil
+	return s.setSysvar(sysvar.EpochRewardsID, b)
 }
 
-// SlotHash is one entry in the SlotHashes sysvar.
-type SlotHash struct {
-	Slot uint64
-	Hash solana.Hash
+// LastRestartSlot returns the current LastRestartSlot sysvar.
+func (s *LiteSVM) LastRestartSlot() (*sysvar.LastRestartSlot, error) {
+	b, err := s.getSysvar(sysvar.LastRestartSlotID)
+	if err != nil {
+		return nil, err
+	}
+	return sysvar.DecodeLastRestartSlot(b)
 }
 
-// SlotHashes returns the current SlotHashes sysvar as a slice.
-func (s *LiteSVM) SlotHashes() ([]SlotHash, error) {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	n := int(C.litesvm_get_slot_hashes_count(s.h))
-	if n == 0 {
-		return nil, nil
+// SetLastRestartSlot replaces the LastRestartSlot sysvar.
+func (s *LiteSVM) SetLastRestartSlot(l *sysvar.LastRestartSlot) error {
+	if l == nil {
+		return errors.New("SetLastRestartSlot: nil last-restart-slot")
 	}
-	buf := make([]C.LiteSvmSlotHashItem, n)
-	got := int(C.litesvm_get_slot_hashes_copy(s.h, &buf[0], C.size_t(n)))
-	if got > n {
-		got = n
+	b, err := l.MarshalBinary()
+	if err != nil {
+		return fmt.Errorf("SetLastRestartSlot: marshal: %w", err)
 	}
-	out := make([]SlotHash, got)
-	for i := range got {
-		out[i].Slot = uint64(buf[i].slot)
-		out[i].Hash = *(*[32]byte)(unsafe.Pointer(&buf[i].hash))
-	}
-	return out, nil
+	return s.setSysvar(sysvar.LastRestartSlotID, b)
 }
 
-// SetSlotHashes replaces the SlotHashes sysvar.
-func (s *LiteSVM) SetSlotHashes(items []SlotHash) error {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	c := make([]C.LiteSvmSlotHashItem, len(items))
-	for i, it := range items {
-		c[i].slot = C.uint64_t(it.Slot)
-		*(*[32]byte)(unsafe.Pointer(&c[i].hash)) = it.Hash
+// SlotHashes returns the current SlotHashes sysvar.
+func (s *LiteSVM) SlotHashes() (sysvar.SlotHashes, error) {
+	b, err := s.getSysvar(sysvar.SlotHashesID)
+	if err != nil {
+		return nil, err
 	}
-	var ptr *C.LiteSvmSlotHashItem
-	if len(c) > 0 {
-		ptr = &c[0]
-	}
-	rc := C.litesvm_set_slot_hashes(s.h, ptr, C.size_t(len(c)))
-	if rc != 0 {
-		return lastErrorLocked(fmt.Sprintf("set_slot_hashes rc=%d", rc))
-	}
-	return nil
+	return sysvar.DecodeSlotHashes(b)
 }
 
-// StakeHistoryItem mirrors one (epoch, StakeHistoryEntry) pair.
-type StakeHistoryItem struct {
-	Epoch        uint64
-	Effective    uint64
-	Activating   uint64
-	Deactivating uint64
+// SetSlotHashes replaces the SlotHashes sysvar. Entries are canonicalized to
+// the layout programs expect: descending slot order, deduplicated, and capped
+// at sysvar.SlotHashesMaxEntries. Passing entries in arbitrary order is safe.
+func (s *LiteSVM) SetSlotHashes(items sysvar.SlotHashes) error {
+	var canonical sysvar.SlotHashes
+	for _, it := range items {
+		canonical.Add(it.Slot, it.Hash)
+	}
+	b, err := canonical.MarshalBinary()
+	if err != nil {
+		return fmt.Errorf("SetSlotHashes: marshal: %w", err)
+	}
+	return s.setSysvar(sysvar.SlotHashesID, b)
 }
 
-// StakeHistory returns the current StakeHistory sysvar as a slice.
-func (s *LiteSVM) StakeHistory() ([]StakeHistoryItem, error) {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	n := int(C.litesvm_get_stake_history_count(s.h))
-	if n == 0 {
-		return nil, nil
+// StakeHistory returns the current StakeHistory sysvar.
+func (s *LiteSVM) StakeHistory() (sysvar.StakeHistory, error) {
+	b, err := s.getSysvar(sysvar.StakeHistoryID)
+	if err != nil {
+		return nil, err
 	}
-	buf := make([]C.LiteSvmStakeHistoryItem, n)
-	got := int(C.litesvm_get_stake_history_copy(s.h, &buf[0], C.size_t(n)))
-	if got > n {
-		got = n
-	}
-	out := make([]StakeHistoryItem, got)
-	for i := range got {
-		out[i] = StakeHistoryItem{
-			Epoch:        uint64(buf[i].epoch),
-			Effective:    uint64(buf[i].effective),
-			Activating:   uint64(buf[i].activating),
-			Deactivating: uint64(buf[i].deactivating),
-		}
-	}
-	return out, nil
+	return sysvar.DecodeStakeHistory(b)
 }
 
-// SetStakeHistory replaces the StakeHistory sysvar.
-func (s *LiteSVM) SetStakeHistory(items []StakeHistoryItem) error {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	c := make([]C.LiteSvmStakeHistoryItem, len(items))
-	for i, it := range items {
-		c[i] = C.LiteSvmStakeHistoryItem{
-			epoch:        C.uint64_t(it.Epoch),
-			effective:    C.uint64_t(it.Effective),
-			activating:   C.uint64_t(it.Activating),
-			deactivating: C.uint64_t(it.Deactivating),
-		}
+// SetStakeHistory replaces the StakeHistory sysvar. Entries are canonicalized
+// to the layout programs expect: descending epoch order, deduplicated, and
+// capped at sysvar.StakeHistoryMaxEntries. Passing entries in arbitrary order
+// is safe; a raw, unsorted slice would otherwise silently break in-program
+// StakeHistory lookups.
+func (s *LiteSVM) SetStakeHistory(items sysvar.StakeHistory) error {
+	var canonical sysvar.StakeHistory
+	for _, it := range items {
+		canonical.Add(it.Epoch, it.Entry)
 	}
-	var ptr *C.LiteSvmStakeHistoryItem
-	if len(c) > 0 {
-		ptr = &c[0]
+	b, err := canonical.MarshalBinary()
+	if err != nil {
+		return fmt.Errorf("SetStakeHistory: marshal: %w", err)
 	}
-	rc := C.litesvm_set_stake_history(s.h, ptr, C.size_t(len(c)))
-	if rc != 0 {
-		return lastErrorLocked(fmt.Sprintf("set_stake_history rc=%d", rc))
-	}
-	return nil
+	return s.setSysvar(sysvar.StakeHistoryID, b)
 }
 
-// SlotHistoryCheck mirrors solana_slot_history::Check.
-type SlotHistoryCheck int
-
-const (
-	SlotHistoryFuture   SlotHistoryCheck = 0
-	SlotHistoryTooOld   SlotHistoryCheck = 1
-	SlotHistoryFound    SlotHistoryCheck = 2
-	SlotHistoryNotFound SlotHistoryCheck = 3
-)
-
-// SlotHistory is an opaque handle around solana_slot_history::SlotHistory.
-// The underlying bitvec is ~128 KB so it is not passed by value across cgo.
-// Always Close when done.
-type SlotHistory struct {
-	h *C.LiteSvmSlotHistoryHandle
-}
-
-// NewSlotHistory returns an empty (default) SlotHistory.
-func NewSlotHistory() (*SlotHistory, error) {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	h := C.litesvm_slot_history_new_default()
-	if h == nil {
-		return nil, lastErrorLocked("slot_history_new_default")
+// SlotHistory returns the current SlotHistory sysvar.
+func (s *LiteSVM) SlotHistory() (*sysvar.SlotHistory, error) {
+	b, err := s.getSysvar(sysvar.SlotHistoryID)
+	if err != nil {
+		return nil, err
 	}
-	sh := &SlotHistory{h: h}
-	runtime.SetFinalizer(sh, (*SlotHistory).Close)
-	return sh, nil
+	return sysvar.DecodeSlotHistory(b)
 }
 
-// Close releases the handle. Safe to call more than once.
-// Not safe to call concurrently with other methods on the same handle.
-func (sh *SlotHistory) Close() {
-	if sh == nil || sh.h == nil {
-		return
-	}
-	C.litesvm_slot_history_free(sh.h)
-	sh.h = nil
-	runtime.SetFinalizer(sh, nil)
-}
-
-// Add marks `slot` as observed.
-func (sh *SlotHistory) Add(slot uint64) {
-	if sh == nil || sh.h == nil {
-		return
-	}
-	C.litesvm_slot_history_add(sh.h, C.uint64_t(slot))
-}
-
-// Check reports whether `slot` is in history, too old, or in the future.
-func (sh *SlotHistory) Check(slot uint64) SlotHistoryCheck {
-	if sh == nil || sh.h == nil {
-		return SlotHistoryNotFound
-	}
-	return SlotHistoryCheck(C.litesvm_slot_history_check(sh.h, C.uint64_t(slot)))
-}
-
-// Oldest returns the oldest slot known to the bitvec.
-// Returns 0 on a nil or closed handle (ambiguous with a legitimate slot 0).
-func (sh *SlotHistory) Oldest() uint64 {
-	if sh == nil || sh.h == nil {
-		return 0
-	}
-	return uint64(C.litesvm_slot_history_oldest(sh.h))
-}
-
-// Newest returns the newest slot known to the bitvec.
-// Returns 0 on a nil or closed handle.
-func (sh *SlotHistory) Newest() uint64 {
-	if sh == nil || sh.h == nil {
-		return 0
-	}
-	return uint64(C.litesvm_slot_history_newest(sh.h))
-}
-
-// NextSlot returns the next_slot field of the bitvec.
-// Returns 0 on a nil or closed handle.
-func (sh *SlotHistory) NextSlot() uint64 {
-	if sh == nil || sh.h == nil {
-		return 0
-	}
-	return uint64(C.litesvm_slot_history_next_slot(sh.h))
-}
-
-// SetNextSlot overrides the next_slot field.
-func (sh *SlotHistory) SetNextSlot(slot uint64) error {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	rc := C.litesvm_slot_history_set_next_slot(sh.h, C.uint64_t(slot))
-	if rc != 0 {
-		return lastErrorLocked(fmt.Sprintf("slot_history_set_next_slot rc=%d", rc))
-	}
-	return nil
-}
-
-// SlotHistory returns the current SlotHistory sysvar as an owned handle.
-// Caller must Close it.
-func (s *LiteSVM) SlotHistory() (*SlotHistory, error) {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	h := C.litesvm_get_slot_history(s.h)
-	if h == nil {
-		return nil, lastErrorLocked("get_slot_history")
-	}
-	sh := &SlotHistory{h: h}
-	runtime.SetFinalizer(sh, (*SlotHistory).Close)
-	return sh, nil
-}
-
-// SetSlotHistory replaces the SlotHistory sysvar. Caller retains ownership
-// of `history`.
-func (s *LiteSVM) SetSlotHistory(history *SlotHistory) error {
-	if history == nil {
+// SetSlotHistory replaces the SlotHistory sysvar.
+func (s *LiteSVM) SetSlotHistory(sh *sysvar.SlotHistory) error {
+	if sh == nil {
 		return errors.New("SetSlotHistory: nil history")
 	}
-	if history.h == nil {
-		return errors.New("SetSlotHistory: history is closed")
+	// The sysvar is a fixed-size bitvec; reject a malformed one rather than
+	// install a wrong-length account that programs would misread.
+	if want := sysvar.SlotHistoryMaxEntries / 64; len(sh.Bits) != want {
+		return fmt.Errorf("SetSlotHistory: malformed bitvec: %d blocks, want %d", len(sh.Bits), want)
 	}
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	rc := C.litesvm_set_slot_history(s.h, history.h)
-	if rc != 0 {
-		return lastErrorLocked(fmt.Sprintf("set_slot_history rc=%d", rc))
+	b, err := sh.MarshalBinary()
+	if err != nil {
+		return fmt.Errorf("SetSlotHistory: marshal: %w", err)
 	}
-	return nil
+	return s.setSysvar(sysvar.SlotHistoryID, b)
 }
 
-// BuildTransferTx is a test helper that produces a bincode-encoded,
-// signed legacy Transaction transferring `lamports` from the keypair
-// derived from `payerSeed` to `to`, using `blockhash`.
+// BuildTransferTx produces a signed, wire-encoded legacy Transaction that
+// transfers `lamports` from the keypair derived from `payerSeed` to `to`,
+// using `blockhash`. It is built natively with solana-go (no FFI).
 //
-// Prefer building transactions with solana-go directly (see the package
-// README). This helper exists to bootstrap tests and for callers that
-// want to avoid pulling in the full SDK.
+// It remains a convenience for tests; application code can build the same
+// transaction directly with solana-go (see the package README and
+// examples/transfer).
 func BuildTransferTx(payerSeed [32]byte, to solana.PublicKey, lamports uint64, blockhash solana.Hash) ([]byte, error) {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
+	// ed25519.NewKeyFromSeed performs the RFC 8032 seed expansion, identical
+	// to the Rust Keypair::new_from_array this previously delegated to, so the
+	// derived payer pubkey (and thus the signature) matches byte-for-byte.
+	priv := solana.PrivateKey(ed25519.NewKeyFromSeed(payerSeed[:]))
+	payer := priv.PublicKey()
 
-	var needed C.size_t
-	// Probe for required size first (buf_len=0 never copies but reports length).
-	rc := C.litesvm_build_transfer_tx(
-		(*C.uint8_t)(unsafe.Pointer(&payerSeed[0])),
-		(*C.uint8_t)(unsafe.Pointer(&to[0])),
-		C.uint64_t(lamports),
-		(*C.uint8_t)(unsafe.Pointer(&blockhash[0])),
-		nil, 0, &needed,
+	ix := system.NewTransferInstruction(lamports, payer, to).Build()
+	tx, err := solana.NewTransaction(
+		[]solana.Instruction{ix},
+		blockhash,
+		solana.TransactionPayer(payer),
 	)
-	if rc != 0 {
-		return nil, lastErrorLocked(fmt.Sprintf("build_transfer_tx probe rc=%d", rc))
+	if err != nil {
+		return nil, fmt.Errorf("BuildTransferTx: build: %w", err)
 	}
-	buf := make([]byte, int(needed))
-	var written C.size_t
-	rc = C.litesvm_build_transfer_tx(
-		(*C.uint8_t)(unsafe.Pointer(&payerSeed[0])),
-		(*C.uint8_t)(unsafe.Pointer(&to[0])),
-		C.uint64_t(lamports),
-		(*C.uint8_t)(unsafe.Pointer(&blockhash[0])),
-		(*C.uint8_t)(unsafe.Pointer(&buf[0])),
-		C.size_t(len(buf)),
-		&written,
-	)
-	if rc != 0 {
-		return nil, lastErrorLocked(fmt.Sprintf("build_transfer_tx rc=%d", rc))
+	if _, err := tx.Sign(func(k solana.PublicKey) *solana.PrivateKey {
+		if k.Equals(payer) {
+			return &priv
+		}
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("BuildTransferTx: sign: %w", err)
 	}
-	if int(written) != len(buf) {
-		return nil, fmt.Errorf("build_transfer_tx: wrote %d, expected %d", int(written), len(buf))
+	out, err := tx.MarshalBinary()
+	if err != nil {
+		return nil, fmt.Errorf("BuildTransferTx: marshal: %w", err)
 	}
-	return buf, nil
+	return out, nil
 }
 
 // copyVarBuf is the generic "probe-then-copy" pattern used by every Rust

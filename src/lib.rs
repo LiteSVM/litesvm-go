@@ -45,18 +45,15 @@
 mod native_mint;
 
 use {
-    bincode::{deserialize, serialize},
+    bincode::deserialize,
     litesvm::{
         types::{FailedTransactionMetadata, SimulatedTransactionInfo, TransactionMetadata},
         LiteSVM,
     },
     solana_account::Account,
     solana_address::Address,
-    solana_keypair::Keypair,
-    solana_message::{inner_instruction::InnerInstructionsList, Message},
+    solana_message::inner_instruction::InnerInstructionsList,
     solana_signature::Signature,
-    solana_signer::Signer,
-    solana_system_interface::instruction::transfer,
     solana_transaction::{versioned::VersionedTransaction, Transaction},
     std::{
         cell::RefCell,
@@ -363,27 +360,6 @@ pub unsafe extern "C" fn litesvm_latest_blockhash(
         // caller's contract.
         unsafe { ptr::copy_nonoverlapping(hash.to_bytes().as_ptr(), out, 32) };
         0
-    })
-}
-
-/// Returns the minimum lamports required to make an account of `data_len`
-/// bytes rent-exempt. Returns `u64::MAX` on error.
-///
-/// # Safety
-///
-/// See module-level safety model.
-#[no_mangle]
-pub unsafe extern "C" fn litesvm_minimum_balance_for_rent_exemption(
-    handle: *const LiteSvmHandle,
-    data_len: usize,
-) -> u64 {
-    guard(u64::MAX, || {
-        clear_error();
-        // SAFETY: forwarded caller contract.
-        let Some(h) = (unsafe { handle_ref(handle) }) else {
-            return u64::MAX;
-        };
-        h.inner.minimum_balance_for_rent_exemption(data_len)
     })
 }
 
@@ -758,40 +734,52 @@ pub unsafe extern "C" fn litesvm_tx_outcome_post_accounts_count(
     })
 }
 
-/// Returns a newly-allocated Account handle for the idx-th post-account and
-/// copies its 32-byte address into `out_address`. Caller must free the
-/// account with [`litesvm_account_free`]. Returns null on error or if the
-/// index is out of range.
+/// Writes the idx-th post-account's 32-byte address into `out_address` and its
+/// encoded bytes into `out_buf` (probe-then-copy; same encoding as
+/// [`litesvm_get_account`]). Returns 0 on success, negative on error or an
+/// out-of-range index.
 ///
 /// # Safety
 ///
-/// See module-level safety model. `out_address` must be null or point to at
-/// least 32 writable bytes.
+/// See module-level safety model. `out_address` must point to 32 writable
+/// bytes; `out_written` must be non-null; if `out_buf_len > 0`, `out_buf` must
+/// be valid for `out_buf_len` writes.
 #[no_mangle]
 pub unsafe extern "C" fn litesvm_tx_outcome_post_account_at(
     handle: *const LiteSvmTxOutcome,
     idx: usize,
     out_address: *mut u8,
-) -> *mut LiteSvmAccount {
-    guard(ptr::null_mut(), || {
+    out_buf: *mut u8,
+    out_buf_len: usize,
+    out_written: *mut usize,
+) -> i32 {
+    guard(-1, || {
+        if out_written.is_null() {
+            set_error("null out_written pointer");
+            return -2;
+        }
+        // SAFETY: non-null per check.
+        unsafe { ptr::write(out_written, 0) };
         // SAFETY: forwarded caller contract.
         let Some(o) = (unsafe { outcome_ref(handle) }) else {
-            return ptr::null_mut();
+            return -3;
         };
         if out_address.is_null() {
             set_error("null out_address pointer");
-            return ptr::null_mut();
+            return -4;
         }
         let Some((addr, acct)) = o.post_accounts.get(idx) else {
             set_error(format!("post_account index out of range: {idx}"));
-            return ptr::null_mut();
+            return -5;
         };
-        // SAFETY: `out_address` is non-null and valid for 32 writable bytes
-        // per caller's contract.
+        // SAFETY: `out_address` is valid for 32 writable bytes per caller.
         unsafe { ptr::copy_nonoverlapping(addr.to_bytes().as_ptr(), out_address, 32) };
-        Box::into_raw(Box::new(LiteSvmAccount {
-            inner: acct.clone(),
-        }))
+        let enc = encode_account(acct);
+        // SAFETY: forwarded caller contract on (out_buf, out_buf_len).
+        let n = unsafe { copy_probe(&enc, out_buf, out_buf_len) };
+        // SAFETY: `out_written` non-null per earlier check.
+        unsafe { ptr::write(out_written, n) };
+        0
     })
 }
 
@@ -1442,170 +1430,43 @@ pub unsafe extern "C" fn litesvm_add_program_with_loader(
 }
 
 // ---------------------------------------------------------------------------
-// Account handle
+// Account wire codec
+//
+// Accounts cross the FFI as a fixed-header byte blob; the typed Account value
+// lives on the Go side. Layout (little-endian):
+//   [lamports: u64][rent_epoch: u64][executable: u8][owner: 32][data: rest]
 // ---------------------------------------------------------------------------
 
-pub struct LiteSvmAccount {
-    inner: Account,
+const ACCOUNT_HEADER_LEN: usize = 8 + 8 + 1 + 32;
+
+fn encode_account(a: &Account) -> Vec<u8> {
+    let mut out = Vec::with_capacity(ACCOUNT_HEADER_LEN + a.data.len());
+    out.extend_from_slice(&a.lamports.to_le_bytes());
+    out.extend_from_slice(&a.rent_epoch.to_le_bytes());
+    out.push(u8::from(a.executable));
+    out.extend_from_slice(a.owner.to_bytes().as_ref());
+    out.extend_from_slice(&a.data);
+    out
 }
 
-/// # Safety
-///
-/// `h` must be either null or a valid pointer to a `LiteSvmAccount`.
-unsafe fn account_ref<'a>(h: *const LiteSvmAccount) -> Option<&'a LiteSvmAccount> {
-    if h.is_null() {
-        set_error("null account handle");
-        None
-    } else {
-        // SAFETY: non-null, valid pointee per caller's contract.
-        Some(unsafe { &*h })
+fn decode_account(b: &[u8]) -> Result<Account, String> {
+    if b.len() < ACCOUNT_HEADER_LEN {
+        return Err(format!(
+            "account: short buffer ({} bytes, need >= {ACCOUNT_HEADER_LEN})",
+            b.len()
+        ));
     }
-}
-
-/// Construct an Account handle. `data` may be null when `data_len` is 0.
-/// Returns null on failure (e.g. out-of-memory or panic).
-///
-/// # Safety
-///
-/// See module-level safety model. `(data, data_len)` may be `(null, 0)`;
-/// `owner` must point to at least 32 readable bytes.
-#[no_mangle]
-pub unsafe extern "C" fn litesvm_account_new(
-    lamports: u64,
-    data: *const u8,
-    data_len: usize,
-    owner: *const u8,
-    executable: bool,
-    rent_epoch: u64,
-) -> *mut LiteSvmAccount {
-    guard(ptr::null_mut(), || {
-        clear_error();
-        // SAFETY: forwarded caller contract.
-        let Some(owner_addr) = (unsafe { pubkey_from_ptr(owner) }) else {
-            return ptr::null_mut();
-        };
-        // SAFETY: forwarded caller contract; helper tolerates (null, 0).
-        let Some(data_slice) = (unsafe { slice_from_c(data, data_len, "data") }) else {
-            return ptr::null_mut();
-        };
-        let acct = Account {
-            lamports,
-            data: data_slice.to_vec(),
-            owner: owner_addr,
-            executable,
-            rent_epoch,
-        };
-        Box::into_raw(Box::new(LiteSvmAccount { inner: acct }))
-    })
-}
-
-/// Free an account handle. Null is a no-op.
-///
-/// # Safety
-///
-/// `handle` must be null or a pointer previously returned from
-/// [`litesvm_account_new`] / [`litesvm_get_account`] / related, not yet freed.
-#[no_mangle]
-pub unsafe extern "C" fn litesvm_account_free(handle: *mut LiteSvmAccount) {
-    if handle.is_null() {
-        return;
-    }
-    guard((), || {
-        // SAFETY: non-null and the pointer came from `Box::into_raw`.
-        drop(unsafe { Box::from_raw(handle) });
-    });
-}
-
-/// # Safety
-///
-/// See module-level safety model.
-#[no_mangle]
-pub unsafe extern "C" fn litesvm_account_lamports(handle: *const LiteSvmAccount) -> u64 {
-    // SAFETY: forwarded caller contract.
-    guard(0, || {
-        unsafe { account_ref(handle) }.map_or(0, |a| a.inner.lamports)
-    })
-}
-
-/// Returns 1 if executable, 0 if not, -1 on error.
-///
-/// # Safety
-///
-/// See module-level safety model.
-#[no_mangle]
-pub unsafe extern "C" fn litesvm_account_executable(handle: *const LiteSvmAccount) -> i32 {
-    guard(-1, || {
-        // SAFETY: forwarded caller contract.
-        let Some(a) = (unsafe { account_ref(handle) }) else {
-            return -1;
-        };
-        i32::from(a.inner.executable)
-    })
-}
-
-/// # Safety
-///
-/// See module-level safety model.
-#[no_mangle]
-pub unsafe extern "C" fn litesvm_account_rent_epoch(handle: *const LiteSvmAccount) -> u64 {
-    // SAFETY: forwarded caller contract.
-    guard(0, || {
-        unsafe { account_ref(handle) }.map_or(0, |a| a.inner.rent_epoch)
-    })
-}
-
-/// # Safety
-///
-/// See module-level safety model. `out` must be null or point to at least
-/// 32 writable bytes.
-#[no_mangle]
-pub unsafe extern "C" fn litesvm_account_owner(handle: *const LiteSvmAccount, out: *mut u8) -> i32 {
-    guard(-1, || {
-        // SAFETY: forwarded caller contract.
-        let Some(a) = (unsafe { account_ref(handle) }) else {
-            return 1;
-        };
-        if out.is_null() {
-            set_error("null out pointer");
-            return 2;
-        }
-        // SAFETY: `out` is non-null and valid for 32 writable bytes per caller.
-        unsafe { ptr::copy_nonoverlapping(a.inner.owner.to_bytes().as_ptr(), out, 32) };
-        0
-    })
-}
-
-/// # Safety
-///
-/// See module-level safety model.
-#[no_mangle]
-pub unsafe extern "C" fn litesvm_account_data_len(handle: *const LiteSvmAccount) -> usize {
-    // SAFETY: forwarded caller contract.
-    guard(0, || {
-        unsafe { account_ref(handle) }.map_or(0, |a| a.inner.data.len())
-    })
-}
-
-/// Probe-then-copy semantics: returns the full data length. Caller may pass
-/// `(NULL, 0)` to probe, then allocate and call again.
-///
-/// # Safety
-///
-/// See module-level safety model. If `buf_len > 0` and `buf` is non-null,
-/// `buf` must be valid for writes of `buf_len` bytes.
-#[no_mangle]
-pub unsafe extern "C" fn litesvm_account_data_copy(
-    handle: *const LiteSvmAccount,
-    buf: *mut u8,
-    buf_len: usize,
-) -> usize {
-    guard(0, || {
-        // SAFETY: forwarded caller contract.
-        let Some(a) = (unsafe { account_ref(handle) }) else {
-            return 0;
-        };
-        // SAFETY: forwarded caller contract on (buf, buf_len).
-        unsafe { copy_probe(&a.inner.data, buf, buf_len) }
+    let lamports = u64::from_le_bytes(b[0..8].try_into().expect("8 bytes"));
+    let rent_epoch = u64::from_le_bytes(b[8..16].try_into().expect("8 bytes"));
+    let executable = b[16] != 0;
+    let owner = Address::try_from(&b[17..ACCOUNT_HEADER_LEN])
+        .map_err(|_| "account: bad owner".to_string())?;
+    Ok(Account {
+        lamports,
+        data: b[ACCOUNT_HEADER_LEN..].to_vec(),
+        owner,
+        executable,
+        rent_epoch,
     })
 }
 
@@ -1613,46 +1474,66 @@ pub unsafe extern "C" fn litesvm_account_data_copy(
 // SVM account + program operations
 // ---------------------------------------------------------------------------
 
-/// Returns a newly-allocated Account handle for `pubkey`, or null if the
-/// account does not exist or on error. Callers must free with
-/// [`litesvm_account_free`].
+/// Writes the encoded account at `pubkey` into `out_buf` (probe-then-copy: pass
+/// `(null, 0)` to learn the length via `*out_written`, then call again with a
+/// buffer of at least that size). Returns 0 if the account exists, 1 if it does
+/// not, negative on error.
 ///
 /// # Safety
 ///
-/// See module-level safety model.
+/// See module-level safety model. `out_written` must be non-null; if
+/// `out_buf_len > 0`, `out_buf` must be valid for `out_buf_len` writes.
 #[no_mangle]
 pub unsafe extern "C" fn litesvm_get_account(
     handle: *const LiteSvmHandle,
     pubkey: *const u8,
-) -> *mut LiteSvmAccount {
-    guard(ptr::null_mut(), || {
+    out_buf: *mut u8,
+    out_buf_len: usize,
+    out_written: *mut usize,
+) -> i32 {
+    guard(-1, || {
         clear_error();
+        if out_written.is_null() {
+            set_error("null out_written pointer");
+            return -2;
+        }
+        // SAFETY: non-null per check.
+        unsafe { ptr::write(out_written, 0) };
         // SAFETY: forwarded caller contract.
         let Some(h) = (unsafe { handle_ref(handle) }) else {
-            return ptr::null_mut();
+            return -3;
         };
         // SAFETY: forwarded caller contract.
         let Some(pk) = (unsafe { pubkey_from_ptr(pubkey) }) else {
-            return ptr::null_mut();
+            return -4;
         };
         match h.inner.get_account(&pk) {
-            Some(acct) => Box::into_raw(Box::new(LiteSvmAccount { inner: acct })),
-            None => ptr::null_mut(),
+            Some(acct) => {
+                let enc = encode_account(&acct);
+                // SAFETY: forwarded caller contract on (out_buf, out_buf_len).
+                let n = unsafe { copy_probe(&enc, out_buf, out_buf_len) };
+                // SAFETY: `out_written` non-null per earlier check.
+                unsafe { ptr::write(out_written, n) };
+                0
+            }
+            None => 1,
         }
     })
 }
 
-/// Stores a copy of `acct` at `pubkey`. The caller retains ownership of the
-/// account handle and must still free it.
+/// Stores the account encoded in `(data, data_len)` at `pubkey`. The encoding
+/// matches [`litesvm_get_account`]'s output.
 ///
 /// # Safety
 ///
-/// See module-level safety model.
+/// See module-level safety model. `(data, data_len)` must describe a valid
+/// slice (at least the fixed account header).
 #[no_mangle]
 pub unsafe extern "C" fn litesvm_set_account(
     handle: *mut LiteSvmHandle,
     pubkey: *const u8,
-    acct: *const LiteSvmAccount,
+    data: *const u8,
+    data_len: usize,
 ) -> i32 {
     guard(-1, || {
         clear_error();
@@ -1664,15 +1545,22 @@ pub unsafe extern "C" fn litesvm_set_account(
         let Some(pk) = (unsafe { pubkey_from_ptr(pubkey) }) else {
             return 2;
         };
-        // SAFETY: forwarded caller contract.
-        let Some(a) = (unsafe { account_ref(acct) }) else {
+        // SAFETY: forwarded caller contract; tolerates (null, 0).
+        let Some(bytes) = (unsafe { slice_from_c(data, data_len, "account data") }) else {
             return 3;
         };
-        match h.inner.set_account(pk, a.inner.clone()) {
+        let acct = match decode_account(bytes) {
+            Ok(a) => a,
+            Err(e) => {
+                set_error(e);
+                return 4;
+            }
+        };
+        match h.inner.set_account(pk, acct) {
             Ok(()) => 0,
             Err(e) => {
                 set_error(format!("set_account failed: {e}"));
-                4
+                5
             }
         }
     })
@@ -1770,874 +1658,174 @@ pub unsafe extern "C" fn litesvm_add_program_from_file(
 }
 
 // ---------------------------------------------------------------------------
-// Test support: build a signed legacy transfer transaction
+// Sysvars (generic bincode byte-exchange, dispatched by account id)
+//
+// The typed sysvar structs live on the Go side (solana-go's `sysvar` package);
+// the FFI only shuttles the bincode-encoded account data, which is identical to
+// the on-chain sysvar account layout. `get` serializes the bank's current
+// sysvar; `set` deserializes and installs it (refreshing the sysvar cache via
+// `LiteSVM::set_sysvar`). Supported ids: Clock, Rent, EpochSchedule,
+// EpochRewards, LastRestartSlot, SlotHashes, StakeHistory, SlotHistory.
 // ---------------------------------------------------------------------------
 
-/// Derives an ed25519 keypair from the 32-byte `seed`, then builds and signs
-/// a legacy `Transaction` that transfers `lamports` to `to_pubkey` using
-/// `blockhash`. Bincode-serializes the result into `out_buf`.
-///
-/// Writes the full encoded length to `*out_written`. If `out_buf_len` is
-/// smaller than that, the buffer content is unspecified and the caller
-/// should retry with a larger buffer. Returns 0 on success.
-///
-/// Intended for testing and bootstrapping Go-side integrations before a
-/// full bincode encoder is wired up on that side.
+/// Serializes the sysvar identified by the 32-byte `id` (its account pubkey)
+/// into `out_buf` as bincode. Probe-then-copy: pass `(null, 0)` to learn the
+/// required length via `*out_written`, then call again with a buffer of at
+/// least that size. Returns 0 on success, non-zero on error (including an
+/// unrecognized sysvar id).
 ///
 /// # Safety
 ///
-/// See module-level safety model. `payer_seed`, `to_pubkey`, and `blockhash`
-/// must each point to at least 32 readable bytes. If `out_buf_len > 0` and
-/// `out_buf` is non-null, `out_buf` must be valid for writes of `out_buf_len`
-/// bytes. `out_written` must not be null.
+/// See module-level safety model. `id` must point to 32 readable bytes;
+/// `out_written` must be non-null; if `out_buf_len > 0` and `out_buf` is
+/// non-null, `out_buf` must be valid for `out_buf_len` writes.
 #[no_mangle]
-pub unsafe extern "C" fn litesvm_build_transfer_tx(
-    payer_seed: *const u8,
-    to_pubkey: *const u8,
-    lamports: u64,
-    blockhash: *const u8,
+pub unsafe extern "C" fn litesvm_get_sysvar(
+    handle: *const LiteSvmHandle,
+    id: *const u8,
     out_buf: *mut u8,
     out_buf_len: usize,
     out_written: *mut usize,
 ) -> i32 {
+    use solana_sdk_ids::sysvar as ids;
     guard(-1, || {
         clear_error();
         if out_written.is_null() {
             set_error("null out_written pointer");
             return 1;
         }
-        // SAFETY: `out_written` is non-null and valid for writing a `usize`.
+        // SAFETY: `out_written` non-null per check.
         unsafe { ptr::write(out_written, 0) };
-
-        if payer_seed.is_null() || to_pubkey.is_null() || blockhash.is_null() {
-            set_error("null input pointer");
+        // SAFETY: forwarded caller contract.
+        let Some(h) = (unsafe { handle_ref(handle) }) else {
             return 2;
+        };
+        if id.is_null() {
+            set_error("null sysvar id pointer");
+            return 3;
         }
-
-        // SAFETY: each of the three pointers is non-null (just checked) and
-        // the caller guarantees 32 readable bytes.
-        let seed_arr: [u8; 32] = unsafe { slice::from_raw_parts(payer_seed, 32) }
+        // SAFETY: 32 readable bytes per caller's contract.
+        let id: [u8; 32] = unsafe { slice::from_raw_parts(id, 32) }
             .try_into()
             .expect("slice is length 32");
-        let payer = Keypair::new_from_array(seed_arr);
 
-        // SAFETY: non-null and 32 readable bytes per caller's contract.
-        let to = Address::try_from(unsafe { slice::from_raw_parts(to_pubkey, 32) })
-            .expect("32-byte slice always fits Address");
-        // SAFETY: non-null and 32 readable bytes per caller's contract.
-        let bh_arr: [u8; 32] = unsafe { slice::from_raw_parts(blockhash, 32) }
-            .try_into()
-            .expect("slice is length 32");
-        let bh = solana_hash::Hash::new_from_array(bh_arr);
-
-        let ix = transfer(&payer.pubkey(), &to, lamports);
-        let msg = Message::new(&[ix], Some(&payer.pubkey()));
-        let tx = Transaction::new(&[&payer], msg, bh);
-
-        let encoded = match serialize(&tx) {
+        macro_rules! ser {
+            ($t:ty) => {
+                bincode::serialize(&h.inner.get_sysvar::<$t>())
+            };
+        }
+        let encoded = if id == ids::clock::id().to_bytes() {
+            ser!(solana_clock::Clock)
+        } else if id == ids::rent::id().to_bytes() {
+            ser!(solana_rent::Rent)
+        } else if id == ids::epoch_schedule::id().to_bytes() {
+            ser!(solana_epoch_schedule::EpochSchedule)
+        } else if id == ids::epoch_rewards::id().to_bytes() {
+            ser!(solana_epoch_rewards::EpochRewards)
+        } else if id == ids::last_restart_slot::id().to_bytes() {
+            ser!(solana_last_restart_slot::LastRestartSlot)
+        } else if id == ids::slot_hashes::id().to_bytes() {
+            ser!(solana_slot_hashes::SlotHashes)
+        } else if id == ids::stake_history::id().to_bytes() {
+            ser!(solana_stake_interface::stake_history::StakeHistory)
+        } else if id == ids::slot_history::id().to_bytes() {
+            ser!(solana_slot_history::SlotHistory)
+        } else {
+            set_error("unknown sysvar id");
+            return 4;
+        };
+        let encoded = match encoded {
             Ok(b) => b,
             Err(e) => {
                 set_error(format!("bincode encode failed: {e}"));
-                return 4;
+                return 5;
             }
         };
-
         // SAFETY: `out_written` non-null per earlier check.
         unsafe { ptr::write(out_written, encoded.len()) };
         if encoded.len() > out_buf_len {
-            return 0; // caller will resize and retry; buf untouched
+            return 0; // caller resizes and retries; buf untouched
         }
         if !out_buf.is_null() && !encoded.is_empty() {
-            // SAFETY: `out_buf` non-null and valid for `out_buf_len >=
-            // encoded.len()` writable bytes per caller's contract.
+            // SAFETY: `out_buf` valid for `out_buf_len >= encoded.len()` writes.
             unsafe { ptr::copy_nonoverlapping(encoded.as_ptr(), out_buf, encoded.len()) };
         }
         0
     })
 }
 
-// ---------------------------------------------------------------------------
-// Sysvars (fixed layout, passed by reference)
-// ---------------------------------------------------------------------------
-
-/// Mirror of `solana_clock::Clock`. Field order matches the original.
-#[repr(C)]
-pub struct LiteSvmClock {
-    pub slot: u64,
-    pub epoch_start_timestamp: i64,
-    pub epoch: u64,
-    pub leader_schedule_epoch: u64,
-    pub unix_timestamp: i64,
-}
-
+/// Installs `(data, data_len)` (bincode-encoded sysvar account data) as the
+/// sysvar identified by the 32-byte `id`, refreshing the bank's sysvar cache.
+/// Returns 0 on success, non-zero on error (including an unrecognized sysvar
+/// id or malformed data).
+///
 /// # Safety
 ///
-/// See module-level safety model. `out` must be null or a valid, aligned
-/// pointer to a `LiteSvmClock`.
+/// See module-level safety model. `id` must point to 32 readable bytes;
+/// `(data, data_len)` must describe a valid slice or be `(null, 0)`.
 #[no_mangle]
-pub unsafe extern "C" fn litesvm_get_clock(
-    handle: *const LiteSvmHandle,
-    out: *mut LiteSvmClock,
-) -> i32 {
-    guard(-1, || {
-        clear_error();
-        // SAFETY: forwarded caller contract.
-        let Some(h) = (unsafe { handle_ref(handle) }) else {
-            return 1;
-        };
-        if out.is_null() {
-            set_error("null clock out pointer");
-            return 2;
-        }
-        let c = h.inner.get_sysvar::<solana_clock::Clock>();
-        let value = LiteSvmClock {
-            slot: c.slot,
-            epoch_start_timestamp: c.epoch_start_timestamp,
-            epoch: c.epoch,
-            leader_schedule_epoch: c.leader_schedule_epoch,
-            unix_timestamp: c.unix_timestamp,
-        };
-        // SAFETY: `out` is non-null and valid for writes of `LiteSvmClock`
-        // per caller's contract. `write_unaligned` is defensive against
-        // potentially misaligned C-side pointers.
-        unsafe { ptr::write_unaligned(out, value) };
-        0
-    })
-}
-
-/// # Safety
-///
-/// See module-level safety model. `clock` must be null or a valid, aligned
-/// pointer to a `LiteSvmClock`.
-#[no_mangle]
-pub unsafe extern "C" fn litesvm_set_clock(
+pub unsafe extern "C" fn litesvm_set_sysvar(
     handle: *mut LiteSvmHandle,
-    clock: *const LiteSvmClock,
+    id: *const u8,
+    data: *const u8,
+    data_len: usize,
 ) -> i32 {
+    use solana_sdk_ids::sysvar as ids;
     guard(-1, || {
         clear_error();
         // SAFETY: forwarded caller contract.
         let Some(h) = (unsafe { handle_mut(handle) }) else {
             return 1;
         };
-        if clock.is_null() {
-            set_error("null clock pointer");
+        if id.is_null() {
+            set_error("null sysvar id pointer");
             return 2;
         }
-        // SAFETY: `clock` is non-null and points to a valid `LiteSvmClock`
-        // per caller's contract; `read_unaligned` is defensive against
-        // misalignment.
-        let src = unsafe { ptr::read_unaligned(clock) };
-        let c = solana_clock::Clock {
-            slot: src.slot,
-            epoch_start_timestamp: src.epoch_start_timestamp,
-            epoch: src.epoch,
-            leader_schedule_epoch: src.leader_schedule_epoch,
-            unix_timestamp: src.unix_timestamp,
+        // SAFETY: 32 readable bytes per caller's contract.
+        let id: [u8; 32] = unsafe { slice::from_raw_parts(id, 32) }
+            .try_into()
+            .expect("slice is length 32");
+        // SAFETY: valid slice or (null, 0) per caller's contract.
+        let bytes: &[u8] = if data.is_null() {
+            &[]
+        } else {
+            unsafe { slice::from_raw_parts(data, data_len) }
         };
-        h.inner.set_sysvar(&c);
-        0
-    })
-}
 
-/// Mirror of `solana_rent::Rent`. Trailing padding after `burn_percent`
-/// is implicit on both sides of the ABI.
-#[repr(C)]
-pub struct LiteSvmRent {
-    pub lamports_per_byte_year: u64,
-    pub exemption_threshold: f64,
-    pub burn_percent: u8,
-}
-
-/// # Safety
-///
-/// See module-level safety model. `out` must be null or a valid, aligned
-/// pointer to a `LiteSvmRent`.
-#[no_mangle]
-#[allow(deprecated)]
-pub unsafe extern "C" fn litesvm_get_rent(
-    handle: *const LiteSvmHandle,
-    out: *mut LiteSvmRent,
-) -> i32 {
-    guard(-1, || {
-        clear_error();
-        // SAFETY: forwarded caller contract.
-        let Some(h) = (unsafe { handle_ref(handle) }) else {
-            return 1;
-        };
-        if out.is_null() {
-            set_error("null rent out pointer");
-            return 2;
+        macro_rules! de_set {
+            ($t:ty) => {
+                match bincode::deserialize::<$t>(bytes) {
+                    Ok(v) => {
+                        h.inner.set_sysvar(&v);
+                        0
+                    }
+                    Err(e) => {
+                        set_error(format!("bincode decode failed: {e}"));
+                        4
+                    }
+                }
+            };
         }
-        let r = h.inner.get_sysvar::<solana_rent::Rent>();
-        let value = LiteSvmRent {
-            lamports_per_byte_year: r.lamports_per_byte_year,
-            exemption_threshold: r.exemption_threshold,
-            burn_percent: r.burn_percent,
-        };
-        // SAFETY: `out` is non-null and valid for writes per caller's
-        // contract; write_unaligned is defensive.
-        unsafe { ptr::write_unaligned(out, value) };
-        0
-    })
-}
-
-/// # Safety
-///
-/// See module-level safety model. `rent` must be null or a valid, aligned
-/// pointer to a `LiteSvmRent`.
-#[no_mangle]
-#[allow(deprecated)]
-pub unsafe extern "C" fn litesvm_set_rent(
-    handle: *mut LiteSvmHandle,
-    rent: *const LiteSvmRent,
-) -> i32 {
-    guard(-1, || {
-        clear_error();
-        // SAFETY: forwarded caller contract.
-        let Some(h) = (unsafe { handle_mut(handle) }) else {
-            return 1;
-        };
-        if rent.is_null() {
-            set_error("null rent pointer");
-            return 2;
+        if id == ids::clock::id().to_bytes() {
+            de_set!(solana_clock::Clock)
+        } else if id == ids::rent::id().to_bytes() {
+            de_set!(solana_rent::Rent)
+        } else if id == ids::epoch_schedule::id().to_bytes() {
+            de_set!(solana_epoch_schedule::EpochSchedule)
+        } else if id == ids::epoch_rewards::id().to_bytes() {
+            de_set!(solana_epoch_rewards::EpochRewards)
+        } else if id == ids::last_restart_slot::id().to_bytes() {
+            de_set!(solana_last_restart_slot::LastRestartSlot)
+        } else if id == ids::slot_hashes::id().to_bytes() {
+            de_set!(solana_slot_hashes::SlotHashes)
+        } else if id == ids::stake_history::id().to_bytes() {
+            de_set!(solana_stake_interface::stake_history::StakeHistory)
+        } else if id == ids::slot_history::id().to_bytes() {
+            de_set!(solana_slot_history::SlotHistory)
+        } else {
+            set_error("unknown sysvar id");
+            3
         }
-        // SAFETY: non-null and valid pointee per caller's contract.
-        let src = unsafe { ptr::read_unaligned(rent) };
-        let r = solana_rent::Rent {
-            lamports_per_byte_year: src.lamports_per_byte_year,
-            exemption_threshold: src.exemption_threshold,
-            burn_percent: src.burn_percent,
-        };
-        h.inner.set_sysvar(&r);
-        0
-    })
-}
-
-/// Mirror of `solana_epoch_schedule::EpochSchedule`. `warmup` is a bool
-/// encoded as `u8` (0 or 1) for stable layout across C toolchains.
-#[repr(C)]
-pub struct LiteSvmEpochSchedule {
-    pub slots_per_epoch: u64,
-    pub leader_schedule_slot_offset: u64,
-    pub warmup: u8,
-    pub first_normal_epoch: u64,
-    pub first_normal_slot: u64,
-}
-
-/// # Safety
-///
-/// See module-level safety model.
-#[no_mangle]
-pub unsafe extern "C" fn litesvm_get_epoch_schedule(
-    handle: *const LiteSvmHandle,
-    out: *mut LiteSvmEpochSchedule,
-) -> i32 {
-    guard(-1, || {
-        clear_error();
-        // SAFETY: forwarded caller contract.
-        let Some(h) = (unsafe { handle_ref(handle) }) else {
-            return 1;
-        };
-        if out.is_null() {
-            set_error("null epoch_schedule out pointer");
-            return 2;
-        }
-        let es = h.inner.get_sysvar::<solana_epoch_schedule::EpochSchedule>();
-        let value = LiteSvmEpochSchedule {
-            slots_per_epoch: es.slots_per_epoch,
-            leader_schedule_slot_offset: es.leader_schedule_slot_offset,
-            warmup: u8::from(es.warmup),
-            first_normal_epoch: es.first_normal_epoch,
-            first_normal_slot: es.first_normal_slot,
-        };
-        // SAFETY: non-null and valid per caller's contract.
-        unsafe { ptr::write_unaligned(out, value) };
-        0
-    })
-}
-
-/// # Safety
-///
-/// See module-level safety model.
-#[no_mangle]
-pub unsafe extern "C" fn litesvm_set_epoch_schedule(
-    handle: *mut LiteSvmHandle,
-    schedule: *const LiteSvmEpochSchedule,
-) -> i32 {
-    guard(-1, || {
-        clear_error();
-        // SAFETY: forwarded caller contract.
-        let Some(h) = (unsafe { handle_mut(handle) }) else {
-            return 1;
-        };
-        if schedule.is_null() {
-            set_error("null epoch_schedule pointer");
-            return 2;
-        }
-        // SAFETY: non-null and valid pointee per caller's contract.
-        let src = unsafe { ptr::read_unaligned(schedule) };
-        let es = solana_epoch_schedule::EpochSchedule {
-            slots_per_epoch: src.slots_per_epoch,
-            leader_schedule_slot_offset: src.leader_schedule_slot_offset,
-            warmup: src.warmup != 0,
-            first_normal_epoch: src.first_normal_epoch,
-            first_normal_slot: src.first_normal_slot,
-        };
-        h.inner.set_sysvar(&es);
-        0
-    })
-}
-
-/// # Safety
-///
-/// See module-level safety model. `out` must be null or a valid `*mut u64`.
-#[no_mangle]
-pub unsafe extern "C" fn litesvm_get_last_restart_slot(
-    handle: *const LiteSvmHandle,
-    out: *mut u64,
-) -> i32 {
-    guard(-1, || {
-        clear_error();
-        // SAFETY: forwarded caller contract.
-        let Some(h) = (unsafe { handle_ref(handle) }) else {
-            return 1;
-        };
-        if out.is_null() {
-            set_error("null out pointer");
-            return 2;
-        }
-        let lrs = h
-            .inner
-            .get_sysvar::<solana_last_restart_slot::LastRestartSlot>();
-        // SAFETY: `out` non-null and valid per caller's contract.
-        unsafe { ptr::write_unaligned(out, lrs.last_restart_slot) };
-        0
-    })
-}
-
-/// # Safety
-///
-/// See module-level safety model.
-#[no_mangle]
-pub unsafe extern "C" fn litesvm_set_last_restart_slot(
-    handle: *mut LiteSvmHandle,
-    slot: u64,
-) -> i32 {
-    guard(-1, || {
-        clear_error();
-        // SAFETY: forwarded caller contract.
-        let Some(h) = (unsafe { handle_mut(handle) }) else {
-            return 1;
-        };
-        h.inner
-            .set_sysvar(&solana_last_restart_slot::LastRestartSlot {
-                last_restart_slot: slot,
-            });
-        0
-    })
-}
-
-// ---------------------------------------------------------------------------
-// EpochRewards sysvar (fixed layout; u128 total_points split into lo/hi u64)
-// ---------------------------------------------------------------------------
-
-/// Mirror of `solana_epoch_rewards::EpochRewards`. `total_points` is a u128
-/// on the Rust side; we split it here into two little-endian u64 halves so
-/// Go can consume it without a u128 type.
-#[repr(C)]
-pub struct LiteSvmEpochRewards {
-    pub distribution_starting_block_height: u64,
-    pub num_partitions: u64,
-    pub parent_blockhash: [u8; 32],
-    pub total_points_lo: u64,
-    pub total_points_hi: u64,
-    pub total_rewards: u64,
-    pub distributed_rewards: u64,
-    pub active: u8,
-}
-
-/// # Safety
-///
-/// See module-level safety model.
-#[no_mangle]
-pub unsafe extern "C" fn litesvm_get_epoch_rewards(
-    handle: *const LiteSvmHandle,
-    out: *mut LiteSvmEpochRewards,
-) -> i32 {
-    guard(-1, || {
-        clear_error();
-        // SAFETY: forwarded caller contract.
-        let Some(h) = (unsafe { handle_ref(handle) }) else {
-            return 1;
-        };
-        if out.is_null() {
-            set_error("null epoch_rewards out pointer");
-            return 2;
-        }
-        let r = h.inner.get_sysvar::<solana_epoch_rewards::EpochRewards>();
-        let value = LiteSvmEpochRewards {
-            distribution_starting_block_height: r.distribution_starting_block_height,
-            num_partitions: r.num_partitions,
-            parent_blockhash: r.parent_blockhash.to_bytes(),
-            total_points_lo: r.total_points as u64,
-            total_points_hi: (r.total_points >> 64) as u64,
-            total_rewards: r.total_rewards,
-            distributed_rewards: r.distributed_rewards,
-            active: u8::from(r.active),
-        };
-        // SAFETY: `out` non-null and valid per caller's contract.
-        unsafe { ptr::write_unaligned(out, value) };
-        0
-    })
-}
-
-/// # Safety
-///
-/// See module-level safety model.
-#[no_mangle]
-pub unsafe extern "C" fn litesvm_set_epoch_rewards(
-    handle: *mut LiteSvmHandle,
-    rewards: *const LiteSvmEpochRewards,
-) -> i32 {
-    guard(-1, || {
-        clear_error();
-        // SAFETY: forwarded caller contract.
-        let Some(h) = (unsafe { handle_mut(handle) }) else {
-            return 1;
-        };
-        if rewards.is_null() {
-            set_error("null epoch_rewards pointer");
-            return 2;
-        }
-        // SAFETY: non-null and valid pointee per caller's contract.
-        let src = unsafe { ptr::read_unaligned(rewards) };
-        let total_points = (src.total_points_lo as u128) | ((src.total_points_hi as u128) << 64);
-        let r = solana_epoch_rewards::EpochRewards {
-            distribution_starting_block_height: src.distribution_starting_block_height,
-            num_partitions: src.num_partitions,
-            parent_blockhash: solana_hash::Hash::new_from_array(src.parent_blockhash),
-            total_points,
-            total_rewards: src.total_rewards,
-            distributed_rewards: src.distributed_rewards,
-            active: src.active != 0,
-        };
-        h.inner.set_sysvar(&r);
-        0
-    })
-}
-
-// ---------------------------------------------------------------------------
-// SlotHashes sysvar (Vec<(slot, hash)>)
-// ---------------------------------------------------------------------------
-
-#[repr(C)]
-pub struct LiteSvmSlotHashItem {
-    pub slot: u64,
-    pub hash: [u8; 32],
-}
-
-/// # Safety
-///
-/// See module-level safety model.
-#[no_mangle]
-pub unsafe extern "C" fn litesvm_get_slot_hashes_count(handle: *const LiteSvmHandle) -> usize {
-    guard(0, || {
-        clear_error();
-        // SAFETY: forwarded caller contract.
-        let Some(h) = (unsafe { handle_ref(handle) }) else {
-            return 0;
-        };
-        h.inner
-            .get_sysvar::<solana_slot_hashes::SlotHashes>()
-            .slot_hashes()
-            .len()
-    })
-}
-
-/// Copies up to `out_count` entries into `out`. Returns the total count
-/// available; if greater than `out_count`, only `out_count` were written.
-///
-/// # Safety
-///
-/// See module-level safety model. If `out_count > 0` and `out` is non-null,
-/// `out` must be valid for writes of `out_count * size_of::<LiteSvmSlotHashItem>()`
-/// bytes.
-#[no_mangle]
-pub unsafe extern "C" fn litesvm_get_slot_hashes_copy(
-    handle: *const LiteSvmHandle,
-    out: *mut LiteSvmSlotHashItem,
-    out_count: usize,
-) -> usize {
-    guard(0, || {
-        clear_error();
-        // SAFETY: forwarded caller contract.
-        let Some(h) = (unsafe { handle_ref(handle) }) else {
-            return 0;
-        };
-        let fetched = h.inner.get_sysvar::<solana_slot_hashes::SlotHashes>();
-        let entries = fetched.slot_hashes();
-        let n = entries.len();
-        if out_count > 0 && !out.is_null() {
-            let copy_n = n.min(out_count);
-            for (i, (slot, hash)) in entries.iter().take(copy_n).enumerate() {
-                let item = LiteSvmSlotHashItem {
-                    slot: *slot,
-                    hash: hash.to_bytes(),
-                };
-                // SAFETY: `out.add(i)` is within the caller-supplied buffer
-                // of `out_count` elements because `i < copy_n <= out_count`.
-                // `write_unaligned` is defensive against C callers that may
-                // pass misaligned storage.
-                unsafe { ptr::write_unaligned(out.add(i), item) };
-            }
-        }
-        n
-    })
-}
-
-/// # Safety
-///
-/// See module-level safety model. `(items, count)` may be `(null, 0)`.
-#[no_mangle]
-pub unsafe extern "C" fn litesvm_set_slot_hashes(
-    handle: *mut LiteSvmHandle,
-    items: *const LiteSvmSlotHashItem,
-    count: usize,
-) -> i32 {
-    guard(-1, || {
-        clear_error();
-        // SAFETY: forwarded caller contract.
-        let Some(h) = (unsafe { handle_mut(handle) }) else {
-            return 1;
-        };
-        // SAFETY: forwarded caller contract; helper tolerates (null, 0).
-        let Some(slice) = (unsafe { slice_from_c(items, count, "items") }) else {
-            return 2;
-        };
-        let converted = solana_slot_hashes::SlotHashes::from_iter(
-            slice
-                .iter()
-                .map(|it| (it.slot, solana_hash::Hash::new_from_array(it.hash))),
-        );
-        h.inner.set_sysvar(&converted);
-        0
-    })
-}
-
-// ---------------------------------------------------------------------------
-// StakeHistory sysvar
-// ---------------------------------------------------------------------------
-
-#[repr(C)]
-pub struct LiteSvmStakeHistoryItem {
-    pub epoch: u64,
-    pub effective: u64,
-    pub activating: u64,
-    pub deactivating: u64,
-}
-
-/// # Safety
-///
-/// See module-level safety model.
-#[no_mangle]
-pub unsafe extern "C" fn litesvm_get_stake_history_count(handle: *const LiteSvmHandle) -> usize {
-    guard(0, || {
-        clear_error();
-        // SAFETY: forwarded caller contract.
-        let Some(h) = (unsafe { handle_ref(handle) }) else {
-            return 0;
-        };
-        h.inner
-            .get_sysvar::<solana_stake_interface::stake_history::StakeHistory>()
-            .iter()
-            .count()
-    })
-}
-
-/// # Safety
-///
-/// See module-level safety model. If `out_count > 0` and `out` is non-null,
-/// `out` must be valid for writes of
-/// `out_count * size_of::<LiteSvmStakeHistoryItem>()` bytes.
-#[no_mangle]
-pub unsafe extern "C" fn litesvm_get_stake_history_copy(
-    handle: *const LiteSvmHandle,
-    out: *mut LiteSvmStakeHistoryItem,
-    out_count: usize,
-) -> usize {
-    guard(0, || {
-        clear_error();
-        // SAFETY: forwarded caller contract.
-        let Some(h) = (unsafe { handle_ref(handle) }) else {
-            return 0;
-        };
-        let fetched = h
-            .inner
-            .get_sysvar::<solana_stake_interface::stake_history::StakeHistory>();
-        let entries: Vec<_> = fetched.iter().collect();
-        let n = entries.len();
-        if out_count > 0 && !out.is_null() {
-            let copy_n = n.min(out_count);
-            for (i, (epoch, entry)) in entries.iter().take(copy_n).enumerate() {
-                let item = LiteSvmStakeHistoryItem {
-                    epoch: *epoch,
-                    effective: entry.effective,
-                    activating: entry.activating,
-                    deactivating: entry.deactivating,
-                };
-                // SAFETY: `out.add(i)` is within the caller-supplied buffer
-                // of `out_count` elements (i < copy_n <= out_count).
-                unsafe { ptr::write_unaligned(out.add(i), item) };
-            }
-        }
-        n
-    })
-}
-
-/// # Safety
-///
-/// See module-level safety model. `(items, count)` may be `(null, 0)`.
-#[no_mangle]
-pub unsafe extern "C" fn litesvm_set_stake_history(
-    handle: *mut LiteSvmHandle,
-    items: *const LiteSvmStakeHistoryItem,
-    count: usize,
-) -> i32 {
-    guard(-1, || {
-        clear_error();
-        // SAFETY: forwarded caller contract.
-        let Some(h) = (unsafe { handle_mut(handle) }) else {
-            return 1;
-        };
-        // SAFETY: forwarded caller contract; helper tolerates (null, 0).
-        let Some(slice) = (unsafe { slice_from_c(items, count, "items") }) else {
-            return 2;
-        };
-        let mut sh = solana_stake_interface::stake_history::StakeHistory::default();
-        for it in slice {
-            sh.add(
-                it.epoch,
-                solana_stake_interface::stake_history::StakeHistoryEntry {
-                    effective: it.effective,
-                    activating: it.activating,
-                    deactivating: it.deactivating,
-                },
-            );
-        }
-        h.inner.set_sysvar(&sh);
-        0
-    })
-}
-
-// ---------------------------------------------------------------------------
-// SlotHistory sysvar (opaque handle; the bitvec is 128 KB)
-// ---------------------------------------------------------------------------
-
-pub struct LiteSvmSlotHistoryHandle {
-    inner: solana_slot_history::SlotHistory,
-}
-
-/// # Safety
-///
-/// `h` must be null or a valid pointer to a `LiteSvmSlotHistoryHandle`.
-unsafe fn slot_history_ref<'a>(
-    h: *const LiteSvmSlotHistoryHandle,
-) -> Option<&'a LiteSvmSlotHistoryHandle> {
-    if h.is_null() {
-        set_error("null slot_history handle");
-        None
-    } else {
-        // SAFETY: non-null, valid pointee per caller's contract.
-        Some(unsafe { &*h })
-    }
-}
-
-/// # Safety
-///
-/// `h` must be null or a valid pointer to a `LiteSvmSlotHistoryHandle` with
-/// no other live references.
-unsafe fn slot_history_mut<'a>(
-    h: *mut LiteSvmSlotHistoryHandle,
-) -> Option<&'a mut LiteSvmSlotHistoryHandle> {
-    if h.is_null() {
-        set_error("null slot_history handle");
-        None
-    } else {
-        // SAFETY: non-null, exclusively owned pointee per caller's contract.
-        Some(unsafe { &mut *h })
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn litesvm_slot_history_new_default() -> *mut LiteSvmSlotHistoryHandle {
-    guard(ptr::null_mut(), || {
-        Box::into_raw(Box::new(LiteSvmSlotHistoryHandle {
-            inner: solana_slot_history::SlotHistory::default(),
-        }))
-    })
-}
-
-/// # Safety
-///
-/// `handle` must be null or a pointer previously returned from
-/// [`litesvm_slot_history_new_default`] or [`litesvm_get_slot_history`], not
-/// yet freed.
-#[no_mangle]
-pub unsafe extern "C" fn litesvm_slot_history_free(handle: *mut LiteSvmSlotHistoryHandle) {
-    if handle.is_null() {
-        return;
-    }
-    guard((), || {
-        // SAFETY: non-null and the pointer came from `Box::into_raw`.
-        drop(unsafe { Box::from_raw(handle) });
-    });
-}
-
-/// # Safety
-///
-/// See module-level safety model.
-#[no_mangle]
-pub unsafe extern "C" fn litesvm_slot_history_add(
-    handle: *mut LiteSvmSlotHistoryHandle,
-    slot: u64,
-) -> i32 {
-    guard(-1, || {
-        clear_error();
-        // SAFETY: forwarded caller contract.
-        let Some(h) = (unsafe { slot_history_mut(handle) }) else {
-            return 1;
-        };
-        h.inner.add(slot);
-        0
-    })
-}
-
-/// 0 = Future, 1 = TooOld, 2 = Found, 3 = NotFound. Returns -1 on handle error.
-///
-/// # Safety
-///
-/// See module-level safety model.
-#[no_mangle]
-pub unsafe extern "C" fn litesvm_slot_history_check(
-    handle: *const LiteSvmSlotHistoryHandle,
-    slot: u64,
-) -> i32 {
-    guard(-1, || {
-        clear_error();
-        // SAFETY: forwarded caller contract.
-        let Some(h) = (unsafe { slot_history_ref(handle) }) else {
-            return -1;
-        };
-        use solana_slot_history::Check;
-        match h.inner.check(slot) {
-            Check::Future => 0,
-            Check::TooOld => 1,
-            Check::Found => 2,
-            Check::NotFound => 3,
-        }
-    })
-}
-
-/// # Safety
-///
-/// See module-level safety model.
-#[no_mangle]
-pub unsafe extern "C" fn litesvm_slot_history_oldest(
-    handle: *const LiteSvmSlotHistoryHandle,
-) -> u64 {
-    guard(0, || {
-        clear_error();
-        // SAFETY: forwarded caller contract.
-        unsafe { slot_history_ref(handle) }.map_or(0, |h| h.inner.oldest())
-    })
-}
-
-/// # Safety
-///
-/// See module-level safety model.
-#[no_mangle]
-pub unsafe extern "C" fn litesvm_slot_history_newest(
-    handle: *const LiteSvmSlotHistoryHandle,
-) -> u64 {
-    guard(0, || {
-        clear_error();
-        // SAFETY: forwarded caller contract.
-        unsafe { slot_history_ref(handle) }.map_or(0, |h| h.inner.newest())
-    })
-}
-
-/// # Safety
-///
-/// See module-level safety model.
-#[no_mangle]
-pub unsafe extern "C" fn litesvm_slot_history_next_slot(
-    handle: *const LiteSvmSlotHistoryHandle,
-) -> u64 {
-    guard(0, || {
-        clear_error();
-        // SAFETY: forwarded caller contract.
-        unsafe { slot_history_ref(handle) }.map_or(0, |h| h.inner.next_slot)
-    })
-}
-
-/// # Safety
-///
-/// See module-level safety model.
-#[no_mangle]
-pub unsafe extern "C" fn litesvm_slot_history_set_next_slot(
-    handle: *mut LiteSvmSlotHistoryHandle,
-    slot: u64,
-) -> i32 {
-    guard(-1, || {
-        clear_error();
-        // SAFETY: forwarded caller contract.
-        let Some(h) = (unsafe { slot_history_mut(handle) }) else {
-            return 1;
-        };
-        h.inner.next_slot = slot;
-        0
-    })
-}
-
-/// # Safety
-///
-/// See module-level safety model.
-#[no_mangle]
-pub unsafe extern "C" fn litesvm_get_slot_history(
-    handle: *const LiteSvmHandle,
-) -> *mut LiteSvmSlotHistoryHandle {
-    guard(ptr::null_mut(), || {
-        clear_error();
-        // SAFETY: forwarded caller contract.
-        let Some(h) = (unsafe { handle_ref(handle) }) else {
-            return ptr::null_mut();
-        };
-        let sh = h.inner.get_sysvar::<solana_slot_history::SlotHistory>();
-        Box::into_raw(Box::new(LiteSvmSlotHistoryHandle { inner: sh }))
-    })
-}
-
-/// # Safety
-///
-/// See module-level safety model.
-#[no_mangle]
-pub unsafe extern "C" fn litesvm_set_slot_history(
-    handle: *mut LiteSvmHandle,
-    history: *const LiteSvmSlotHistoryHandle,
-) -> i32 {
-    guard(-1, || {
-        clear_error();
-        // SAFETY: forwarded caller contract.
-        let Some(h) = (unsafe { handle_mut(handle) }) else {
-            return 1;
-        };
-        // SAFETY: forwarded caller contract.
-        let Some(sh) = (unsafe { slot_history_ref(history) }) else {
-            return 2;
-        };
-        h.inner.set_sysvar(&sh.inner);
-        0
     })
 }
 

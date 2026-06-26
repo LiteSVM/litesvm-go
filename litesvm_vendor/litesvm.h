@@ -21,7 +21,6 @@ extern "C" {
 
 typedef struct LiteSvmHandle LiteSvmHandle;
 typedef struct LiteSvmTxOutcome LiteSvmTxOutcome;
-typedef struct LiteSvmAccount LiteSvmAccount;
 
 /* Copy the last thread-local error into `buf`. Returns the full length of
  * the error string. If that exceeds `buf_len`, the buffer is truncated.
@@ -41,8 +40,6 @@ int32_t litesvm_expire_blockhash(LiteSvmHandle *handle);
 int32_t litesvm_get_balance(const LiteSvmHandle *handle,
                             const uint8_t *pubkey, uint64_t *out);
 int32_t litesvm_latest_blockhash(const LiteSvmHandle *handle, uint8_t *out32);
-uint64_t litesvm_minimum_balance_for_rent_exemption(
-    const LiteSvmHandle *handle, size_t data_len);
 
 /* Static NUL-terminated version string. Do not free. */
 const uint8_t *litesvm_version(void);
@@ -84,10 +81,12 @@ size_t  litesvm_tx_outcome_return_data_copy(const LiteSvmTxOutcome *handle,
 /* Post-accounts. Populated only for successful simulations; 0 otherwise. */
 size_t litesvm_tx_outcome_post_accounts_count(const LiteSvmTxOutcome *handle);
 
-/* Returns a newly-allocated Account handle (free with litesvm_account_free)
- * and writes the 32-byte address to `out_address`. NULL on error / OOB. */
-LiteSvmAccount *litesvm_tx_outcome_post_account_at(
-    const LiteSvmTxOutcome *handle, size_t idx, uint8_t *out_address);
+/* Writes the idx-th post-account's 32-byte address to `out_address` and its
+ * encoded bytes to `out_buf` (probe-then-copy; see litesvm_get_account).
+ * Returns 0 on success, negative on error / OOB. */
+int32_t litesvm_tx_outcome_post_account_at(
+    const LiteSvmTxOutcome *handle, size_t idx, uint8_t *out_address,
+    uint8_t *out_buf, size_t out_buf_len, size_t *out_written);
 
 /* Inner instructions (2D: Vec<Vec<InnerInstruction>>).
  * inner_instructions[outer_idx] is the list of CPIs invoked by the
@@ -167,32 +166,23 @@ int32_t litesvm_add_program_with_loader(LiteSvmHandle *handle,
 /* Accounts                                                             */
 /* ------------------------------------------------------------------- */
 
-/* Construct an Account. `data` may be NULL when `data_len` is 0.
- * Returns NULL on failure. Free with litesvm_account_free. */
-LiteSvmAccount *litesvm_account_new(uint64_t lamports,
-                                    const uint8_t *data, size_t data_len,
-                                    const uint8_t *owner,    /* 32 bytes */
-                                    bool executable,
-                                    uint64_t rent_epoch);
-void litesvm_account_free(LiteSvmAccount *handle);
+/* Accounts cross the FFI as a fixed-header byte blob (the typed value lives on
+ * the Go side). Layout (little-endian):
+ *   [lamports u64][rent_epoch u64][executable u8][owner 32][data...]
+ *
+ * litesvm_get_account writes that encoding for `pubkey` into `out_buf`
+ * (probe-then-copy: pass out_buf=NULL / out_buf_len=0 to learn the length via
+ * *out_written, then call again with a buffer of at least that size). Returns
+ * 0 if the account exists, 1 if it does not, negative on error. */
+int32_t litesvm_get_account(const LiteSvmHandle *handle,
+                            const uint8_t *pubkey,
+                            uint8_t *out_buf, size_t out_buf_len,
+                            size_t *out_written);
 
-uint64_t litesvm_account_lamports(const LiteSvmAccount *handle);
-int32_t  litesvm_account_executable(const LiteSvmAccount *handle);
-uint64_t litesvm_account_rent_epoch(const LiteSvmAccount *handle);
-int32_t  litesvm_account_owner(const LiteSvmAccount *handle, uint8_t *out32);
-size_t   litesvm_account_data_len(const LiteSvmAccount *handle);
-size_t   litesvm_account_data_copy(const LiteSvmAccount *handle,
-                                   uint8_t *buf, size_t buf_len);
-
-/* Returns a newly-allocated Account handle (free with litesvm_account_free),
- * or NULL if the account does not exist. */
-LiteSvmAccount *litesvm_get_account(const LiteSvmHandle *handle,
-                                    const uint8_t *pubkey);
-
-/* Stores a copy of `acct` at `pubkey`. Caller retains ownership of `acct`. */
+/* Stores the account encoded in `(data, data_len)` at `pubkey`. */
 int32_t litesvm_set_account(LiteSvmHandle *handle,
                             const uint8_t *pubkey,
-                            const LiteSvmAccount *acct);
+                            const uint8_t *data, size_t data_len);
 
 /* ------------------------------------------------------------------- */
 /* Programs                                                             */
@@ -207,112 +197,27 @@ int32_t litesvm_add_program_from_file(LiteSvmHandle *handle,
                                       size_t path_len);
 
 /* ------------------------------------------------------------------- */
-/* Sysvars (fixed layout, passed by reference)                          */
+/* Sysvars (generic bincode byte-exchange, dispatched by account id)    */
+/*                                                                       */
+/* The typed sysvar structs live on the Go side (solana-go's sysvar      */
+/* package); the FFI shuttles only the bincode-encoded account data,     */
+/* which matches the on-chain sysvar account layout. `id` is the 32-byte */
+/* sysvar account pubkey. litesvm_get_sysvar is probe-then-copy: pass    */
+/* (out_buf=NULL, out_buf_len=0) to learn the length via *out_written,   */
+/* then call again with a buffer of at least that size. Supported ids:   */
+/* Clock, Rent, EpochSchedule, EpochRewards, LastRestartSlot, SlotHashes,*/
+/* StakeHistory, SlotHistory.                                            */
 /* ------------------------------------------------------------------- */
 
-typedef struct {
-    uint64_t slot;
-    int64_t  epoch_start_timestamp;
-    uint64_t epoch;
-    uint64_t leader_schedule_epoch;
-    int64_t  unix_timestamp;
-} LiteSvmClock;
-
-int32_t litesvm_get_clock(const LiteSvmHandle *handle, LiteSvmClock *out);
-int32_t litesvm_set_clock(LiteSvmHandle *handle, const LiteSvmClock *clock);
-
-typedef struct {
-    uint64_t lamports_per_byte_year;
-    double   exemption_threshold;
-    uint8_t  burn_percent;
-} LiteSvmRent;
-
-int32_t litesvm_get_rent(const LiteSvmHandle *handle, LiteSvmRent *out);
-int32_t litesvm_set_rent(LiteSvmHandle *handle, const LiteSvmRent *rent);
-
-typedef struct {
-    uint64_t slots_per_epoch;
-    uint64_t leader_schedule_slot_offset;
-    uint8_t  warmup;               /* 0 or 1 */
-    uint64_t first_normal_epoch;
-    uint64_t first_normal_slot;
-} LiteSvmEpochSchedule;
-
-int32_t litesvm_get_epoch_schedule(const LiteSvmHandle *handle,
-                                   LiteSvmEpochSchedule *out);
-int32_t litesvm_set_epoch_schedule(LiteSvmHandle *handle,
-                                   const LiteSvmEpochSchedule *schedule);
-
-int32_t litesvm_get_last_restart_slot(const LiteSvmHandle *handle,
-                                      uint64_t *out);
-int32_t litesvm_set_last_restart_slot(LiteSvmHandle *handle, uint64_t slot);
-
-/* EpochRewards sysvar. total_points is u128 split as lo/hi u64 halves. */
-typedef struct {
-    uint64_t distribution_starting_block_height;
-    uint64_t num_partitions;
-    uint8_t  parent_blockhash[32];
-    uint64_t total_points_lo;
-    uint64_t total_points_hi;
-    uint64_t total_rewards;
-    uint64_t distributed_rewards;
-    uint8_t  active;
-} LiteSvmEpochRewards;
-
-int32_t litesvm_get_epoch_rewards(const LiteSvmHandle *handle,
-                                  LiteSvmEpochRewards *out);
-int32_t litesvm_set_epoch_rewards(LiteSvmHandle *handle,
-                                  const LiteSvmEpochRewards *rewards);
-
-/* SlotHashes: Vec<(slot, hash)>. */
-typedef struct {
-    uint64_t slot;
-    uint8_t  hash[32];
-} LiteSvmSlotHashItem;
-
-size_t  litesvm_get_slot_hashes_count(const LiteSvmHandle *handle);
-size_t  litesvm_get_slot_hashes_copy(const LiteSvmHandle *handle,
-                                     LiteSvmSlotHashItem *out, size_t out_count);
-int32_t litesvm_set_slot_hashes(LiteSvmHandle *handle,
-                                const LiteSvmSlotHashItem *items, size_t count);
-
-/* StakeHistory: Vec<(epoch, StakeHistoryEntry)>. */
-typedef struct {
-    uint64_t epoch;
-    uint64_t effective;
-    uint64_t activating;
-    uint64_t deactivating;
-} LiteSvmStakeHistoryItem;
-
-size_t  litesvm_get_stake_history_count(const LiteSvmHandle *handle);
-size_t  litesvm_get_stake_history_copy(const LiteSvmHandle *handle,
-                                       LiteSvmStakeHistoryItem *out,
-                                       size_t out_count);
-int32_t litesvm_set_stake_history(LiteSvmHandle *handle,
-                                  const LiteSvmStakeHistoryItem *items,
-                                  size_t count);
-
-/* SlotHistory: opaque handle (the bitvec is 128 KB). */
-typedef struct LiteSvmSlotHistoryHandle LiteSvmSlotHistoryHandle;
-
-LiteSvmSlotHistoryHandle *litesvm_slot_history_new_default(void);
-void                      litesvm_slot_history_free(
-    LiteSvmSlotHistoryHandle *handle);
-
-int32_t  litesvm_slot_history_add(LiteSvmSlotHistoryHandle *handle,
-                                  uint64_t slot);
-/* 0 = Future, 1 = TooOld, 2 = Found, 3 = NotFound; -1 on error. */
-int32_t  litesvm_slot_history_check(const LiteSvmSlotHistoryHandle *handle,
-                                    uint64_t slot);
-uint64_t litesvm_slot_history_oldest(const LiteSvmSlotHistoryHandle *handle);
-uint64_t litesvm_slot_history_newest(const LiteSvmSlotHistoryHandle *handle);
-uint64_t litesvm_slot_history_next_slot(const LiteSvmSlotHistoryHandle *handle);
-int32_t  litesvm_slot_history_set_next_slot(
-    LiteSvmSlotHistoryHandle *handle, uint64_t slot);
-
-LiteSvmSlotHistoryHandle *litesvm_get_slot_history(const LiteSvmHandle *handle);
-int32_t                   litesvm_set_slot_history(
-    LiteSvmHandle *handle, const LiteSvmSlotHistoryHandle *history);
+int32_t litesvm_get_sysvar(const LiteSvmHandle *handle,
+                           const uint8_t *id,        /* 32 bytes */
+                           uint8_t *out_buf,
+                           size_t out_buf_len,
+                           size_t *out_written);
+int32_t litesvm_set_sysvar(LiteSvmHandle *handle,
+                           const uint8_t *id,        /* 32 bytes */
+                           const uint8_t *data,
+                           size_t data_len);
 
 /* ------------------------------------------------------------------- */
 /* ComputeBudget (~44 fields; fixed layout)                             */
@@ -400,19 +305,6 @@ size_t litesvm_feature_set_inactive_copy(const LiteSvmFeatureSetHandle *handle,
 
 int32_t litesvm_set_feature_set(LiteSvmHandle *handle,
                                 const LiteSvmFeatureSetHandle *features);
-
-/* Test helper: builds and signs a legacy transfer transaction and
- * bincode-encodes it into `out_buf`. Writes the required length into
- * *out_written; if out_buf_len is smaller, content is unspecified and the
- * caller should retry. Returns 0 on success. */
-int32_t litesvm_build_transfer_tx(
-    const uint8_t *payer_seed,   /* 32 bytes */
-    const uint8_t *to_pubkey,    /* 32 bytes */
-    uint64_t lamports,
-    const uint8_t *blockhash,    /* 32 bytes */
-    uint8_t *out_buf,
-    size_t out_buf_len,
-    size_t *out_written);
 
 #ifdef __cplusplus
 }

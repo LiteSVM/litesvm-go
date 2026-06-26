@@ -242,13 +242,16 @@ hist, _ := svm.StakeHistory()
 _ = svm.SetStakeHistory(hist)
 ```
 
-`SlotHistory` is a ~128 KB bitvec and uses a handle rather than a slice:
+The sysvar types above (`Clock`, `Rent`, `SlotHistory`, ...) are provided by
+solana-go's [`sysvar`](https://pkg.go.dev/github.com/gagliardetto/solana-go/sysvar)
+package. `SlotHistory` is a ~128 KB bitvec value:
 
 ```go
-sh := litesvm.NewSlotHistory()
-defer sh.Close()
+import "github.com/gagliardetto/solana-go/sysvar"
+
+sh := sysvar.NewSlotHistory()
 sh.Add(42)
-_ = sh.Check(42) // SlotHistoryFound / SlotHistoryNotFound / SlotHistoryTooOld
+_ = sh.Check(42) // sysvar.SlotHistoryFound / SlotHistoryNotFound / SlotHistoryTooOld
 _ = svm.SetSlotHistory(sh)
 ```
 

@@ -2,13 +2,15 @@ module github.com/LiteSVM/litesvm-go
 
 go 1.24.0
 
-require github.com/gagliardetto/solana-go v1.21.0
+require (
+	github.com/gagliardetto/binary v0.8.0
+	github.com/gagliardetto/solana-go v1.21.0
+)
 
 require (
 	github.com/blendle/zapdriver v1.3.1 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/fatih/color v1.18.0 // indirect
-	github.com/gagliardetto/binary v0.8.0 // indirect
 	github.com/gagliardetto/treeout v0.1.4 // indirect
 	github.com/goccy/go-json v0.10.6 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
@@ -27,3 +29,5 @@ require (
 	golang.org/x/sys v0.40.0 // indirect
 	golang.org/x/term v0.39.0 // indirect
 )
+
+replace github.com/gagliardetto/solana-go => github.com/sonicfromnewyoke/solana-go v0.0.0-20260626085553-f581cde1acf3

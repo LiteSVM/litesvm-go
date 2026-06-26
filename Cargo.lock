@@ -1587,16 +1587,14 @@ dependencies = [
  "solana-epoch-rewards",
  "solana-epoch-schedule",
  "solana-hash 4.2.0",
- "solana-keypair",
  "solana-last-restart-slot",
  "solana-message",
  "solana-rent 3.1.0",
+ "solana-sdk-ids",
  "solana-signature",
- "solana-signer",
  "solana-slot-hashes",
  "solana-slot-history",
  "solana-stake-interface",
- "solana-system-interface 3.1.0",
  "solana-transaction",
 ]
 
