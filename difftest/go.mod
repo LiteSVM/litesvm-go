@@ -1,10 +1,19 @@
-module github.com/LiteSVM/litesvm-go
+module github.com/LiteSVM/litesvm-go/difftest
 
 go 1.25.7
 
+// Replace directives do not propagate across module boundaries, so the
+// parent module's replacements are mirrored here. The mithrilsvm package
+// is part of the parent module, so a single relative replace covers both
+// engine views.
+replace github.com/LiteSVM/litesvm-go => ..
+
+replace github.com/Overclock-Validator/mithril => github.com/sonicfromnewyoke/mithril v0.0.0-20260717121410-2eccb10966f5
+
+replace github.com/gagliardetto/solana-go => github.com/sonicfromnewyoke/solana-go v0.0.0-20260716221031-e57373b5124f
+
 require (
-	github.com/Overclock-Validator/mithril v0.3.0
-	github.com/gagliardetto/binary v0.8.0
+	github.com/LiteSVM/litesvm-go v0.0.0-00010101000000-000000000000
 	github.com/gagliardetto/solana-go v1.21.0
 	github.com/stretchr/testify v1.11.1
 )
@@ -15,6 +24,7 @@ require (
 	github.com/Overclock-Validator/bgls v0.0.0-20250309141600-b7db1bfbf3fa // indirect
 	github.com/Overclock-Validator/crypto v0.0.0-20250307094320-aaf52fac5261 // indirect
 	github.com/Overclock-Validator/gnark-crypto v0.0.0-20250309203346-2a67ed08a105 // indirect
+	github.com/Overclock-Validator/mithril v0.3.0 // indirect
 	github.com/Overclock-Validator/wide v0.0.0-20250221123529-f80959d02044 // indirect
 	github.com/benbjohnson/clock v1.3.5 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
@@ -36,6 +46,7 @@ require (
 	github.com/ethereum/go-ethereum v1.15.12-0.20250620111820-f26b5653e8bf // indirect
 	github.com/fatih/color v1.18.0 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
+	github.com/gagliardetto/binary v0.8.0 // indirect
 	github.com/gagliardetto/treeout v0.1.4 // indirect
 	github.com/gammazero/deque v1.0.0 // indirect
 	github.com/getsentry/sentry-go v0.27.0 // indirect
@@ -111,10 +122,3 @@ require (
 	k8s.io/klog/v2 v2.100.1 // indirect
 	rsc.io/tmplfunc v0.0.3 // indirect
 )
-
-// The mithril dependency is consumed through a local checkout until the
-// fork is published under its own module path (see
-// docs/migration/packaging.md, Option A).
-replace github.com/Overclock-Validator/mithril => github.com/sonicfromnewyoke/mithril v0.0.0-20260717121410-2eccb10966f5
-
-replace github.com/gagliardetto/solana-go => github.com/sonicfromnewyoke/solana-go v0.0.0-20260716221031-e57373b5124f

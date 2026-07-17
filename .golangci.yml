@@ -1,0 +1,11 @@
+version: "2"
+
+linters:
+  exclusions:
+    rules:
+      # oracle_test.go dot-imports the mithrilsvm package on purpose: the
+      # test bodies stay byte-comparable with the original root-package
+      # suite (identifiers like New/LiteSVM/ComputeBudget resolve as they
+      # did inside package litesvm).
+      - path: mithrilsvm/oracle_test\.go
+        text: "dot imports"

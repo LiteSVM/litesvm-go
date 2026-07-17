@@ -1,4 +1,13 @@
-package litesvm
+// Package mithrilsvm_test: oracle port of the root package's test suite
+// (../litesvm_test.go) run against this package directly. The dot import
+// keeps the test bodies byte-comparable with the root suite: identifiers
+// such as New, LiteSVM, BuildTransferTx, and ComputeBudget resolve exactly
+// as they do inside package litesvm.
+//
+// Every deliberate deviation from the root suite is tagged with a
+// "NOTE(oracle):" comment naming the divergence. Everything else is a 1:1
+// copy of the root suite's assertions.
+package mithrilsvm_test
 
 import (
 	"crypto/ed25519"
@@ -12,10 +21,12 @@ import (
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/programs/system"
 	"github.com/gagliardetto/solana-go/sysvar"
+
+	. "github.com/LiteSVM/litesvm-go/mithrilsvm"
 )
 
-// Tests do not call t.Parallel(): the suite runs serially to stay
-// byte-comparable with its oracle twin in mithrilsvm/oracle_test.go.
+// The tests run serially (no t.Parallel) to keep the port 1:1 with the
+// root suite.
 
 // A deterministic non-system-program owner used for SetAccount tests.
 var testOwner = solana.PublicKey{1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
@@ -23,21 +34,25 @@ var testOwner = solana.PublicKey{1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
 	21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32}
 
 // loggingProgramPath returns the path of a valid SBF program ELF for the
-// AddProgram* tests. The shared node-litesvm fixture directory is preferred
-// when present; otherwise fall back to the module's own embedded ELF
-// fixtures (mithrilsvm/elf/spl_memo-3.0.0.so) so the AddProgram* paths are
-// exercised instead of skipped. The assertions only require a valid
-// loadable program.
+// AddProgram* tests.
+//
+// NOTE(oracle): the original suite reached across repos into
+// ../node-litesvm/program_bytes/spl_example_logging.so and skipped when the
+// fixture directory was missing. That directory is still preferred when
+// present; otherwise the port falls back to the module's own embedded ELF
+// fixtures (elf/spl_memo-3.0.0.so) so the AddProgram* paths are actually
+// exercised instead of skipped. The assertions themselves are unchanged:
+// they only require a valid loadable program.
 func loggingProgramPath(t *testing.T) string {
 	t.Helper()
-	orig, err := filepath.Abs(filepath.Join("..", "node-litesvm", "program_bytes", "spl_example_logging.so"))
+	orig, err := filepath.Abs(filepath.Join("..", "..", "node-litesvm", "program_bytes", "spl_example_logging.so"))
 	if err != nil {
 		t.Fatalf("abs path: %v", err)
 	}
 	if _, err := os.Stat(orig); err == nil {
 		return orig
 	}
-	fallback, err := filepath.Abs(filepath.Join("mithrilsvm", "elf", "spl_memo-3.0.0.so"))
+	fallback, err := filepath.Abs(filepath.Join("elf", "spl_memo-3.0.0.so"))
 	if err != nil {
 		t.Fatalf("abs path: %v", err)
 	}
@@ -56,7 +71,7 @@ func randPubkey(t *testing.T) solana.PublicKey {
 	return p
 }
 
-func TestNewAndClose(t *testing.T) {
+func TestOracleNewAndClose(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -66,7 +81,7 @@ func TestNewAndClose(t *testing.T) {
 	svm.Close()
 }
 
-func TestVersion(t *testing.T) {
+func TestOracleVersion(t *testing.T) {
 	v := Version()
 	if v == "" {
 		t.Fatal("empty version")
@@ -74,7 +89,7 @@ func TestVersion(t *testing.T) {
 	t.Logf("wrapper version: %s", v)
 }
 
-func TestAirdropAndBalance(t *testing.T) {
+func TestOracleAirdropAndBalance(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -109,7 +124,7 @@ func TestAirdropAndBalance(t *testing.T) {
 	}
 }
 
-func TestLatestBlockhashChangesOnExpire(t *testing.T) {
+func TestOracleLatestBlockhashChangesOnExpire(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -132,7 +147,7 @@ func TestLatestBlockhashChangesOnExpire(t *testing.T) {
 	}
 }
 
-func TestRentExemption(t *testing.T) {
+func TestOracleRentExemption(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -147,9 +162,8 @@ func TestRentExemption(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MinimumBalanceForRentExemption(1024): %v", err)
 	}
-	// Pin the exact default-rent values (this path is now computed in Go from
-	// the Rent sysvar rather than via FFI, so assert byte-for-byte parity with
-	// Agave's canonical formula: (128 overhead + data_len) * 3480 * 2.0).
+	// Pin the exact default-rent values (byte-for-byte parity with Agave's
+	// canonical formula: (128 overhead + data_len) * 3480 * 2.0).
 	if zero != 890_880 {
 		t.Fatalf("0-byte rent = %d, want 890880", zero)
 	}
@@ -168,7 +182,7 @@ func pubkeyFromSeed(t *testing.T, seed [32]byte) solana.PublicKey {
 	return priv.PublicKey()
 }
 
-func TestSendBadBytesProducesError(t *testing.T) {
+func TestOracleSendBadBytesProducesError(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -184,7 +198,7 @@ func TestSendBadBytesProducesError(t *testing.T) {
 	}
 }
 
-func TestTransferRoundtrip(t *testing.T) {
+func TestOracleTransferRoundtrip(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -255,11 +269,10 @@ func TestTransferRoundtrip(t *testing.T) {
 	}
 }
 
-// TestTransferViaSolanaGo exercises the pure-Go path: construct and sign a
-// transaction using solana-go, marshal it with MarshalBinary, and submit it
-// via SendLegacyTransaction. This validates that solana-go's legacy
-// Transaction wire format is bincode-compatible with what litesvm expects.
-func TestTransferViaSolanaGo(t *testing.T) {
+// TestOracleTransferViaSolanaGo exercises the pure-Go path: construct and
+// sign a transaction using solana-go, marshal it with MarshalBinary, and
+// submit it via SendLegacyTransaction.
+func TestOracleTransferViaSolanaGo(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -330,15 +343,10 @@ func TestTransferViaSolanaGo(t *testing.T) {
 	}
 }
 
-// TestMinimalExample is the Go equivalent of the LiteSVM README's minimal
-// example (https://github.com/LiteSVM/litesvm#-minimal-example) and mirrors
-// the upstream `system_transfer` integration test in litesvm/tests/system.rs.
-//
-// The README snippet airdrops 10_000 lamports and asserts to=64. That worked
-// against an older litesvm; current versions enforce rent, so a fresh account
-// can't hold 64 lamports. The real upstream test funds both sides with
-// LAMPORTS_PER_SOL — we match that shape here.
-func TestMinimalExample(t *testing.T) {
+// TestOracleMinimalExample is the Go equivalent of the LiteSVM README's
+// minimal example, mirroring the upstream `system_transfer` integration test
+// in litesvm/tests/system.rs.
+func TestOracleMinimalExample(t *testing.T) {
 	const (
 		lamportsPerSol = uint64(1_000_000_000)
 		expectedFee    = uint64(5000)
@@ -422,7 +430,7 @@ func TestMinimalExample(t *testing.T) {
 	}
 }
 
-func TestTransferFailsOnInsufficientFunds(t *testing.T) {
+func TestOracleTransferFailsOnInsufficientFunds(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -464,7 +472,7 @@ func TestTransferFailsOnInsufficientFunds(t *testing.T) {
 	t.Logf("fail tx error: %s", out.Error())
 }
 
-func TestGetAccountMissing(t *testing.T) {
+func TestOracleGetAccountMissing(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -477,7 +485,7 @@ func TestGetAccountMissing(t *testing.T) {
 	}
 }
 
-func TestGetAccountAfterAirdrop(t *testing.T) {
+func TestOracleGetAccountAfterAirdrop(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -506,7 +514,7 @@ func TestGetAccountAfterAirdrop(t *testing.T) {
 	}
 }
 
-func TestSetAccountRoundtrip(t *testing.T) {
+func TestOracleSetAccountRoundtrip(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -546,7 +554,7 @@ func TestSetAccountRoundtrip(t *testing.T) {
 	}
 }
 
-func TestAddProgramFromFile(t *testing.T) {
+func TestOracleAddProgramFromFile(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -570,7 +578,7 @@ func TestAddProgramFromFile(t *testing.T) {
 	}
 }
 
-func TestAddProgramFromBytes(t *testing.T) {
+func TestOracleAddProgramFromBytes(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -597,7 +605,7 @@ func TestAddProgramFromBytes(t *testing.T) {
 	}
 }
 
-func TestClockRoundtrip(t *testing.T) {
+func TestOracleClockRoundtrip(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -623,7 +631,7 @@ func TestClockRoundtrip(t *testing.T) {
 	}
 }
 
-func TestRentRoundtrip(t *testing.T) {
+func TestOracleRentRoundtrip(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -656,7 +664,7 @@ func TestRentRoundtrip(t *testing.T) {
 	}
 }
 
-func TestEpochScheduleRoundtrip(t *testing.T) {
+func TestOracleEpochScheduleRoundtrip(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -682,7 +690,7 @@ func TestEpochScheduleRoundtrip(t *testing.T) {
 	}
 }
 
-func TestLastRestartSlotRoundtrip(t *testing.T) {
+func TestOracleLastRestartSlotRoundtrip(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -702,7 +710,7 @@ func TestLastRestartSlotRoundtrip(t *testing.T) {
 	}
 }
 
-func TestWarpToSlot(t *testing.T) {
+func TestOracleWarpToSlot(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -770,7 +778,7 @@ func buildSignedTransfer(t *testing.T, svm *LiteSVM, fund, xfer uint64) (
 	return
 }
 
-func TestSimulateLegacyTransactionSuccess(t *testing.T) {
+func TestOracleSimulateLegacyTransactionSuccess(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -834,7 +842,7 @@ func TestSimulateLegacyTransactionSuccess(t *testing.T) {
 	}
 }
 
-func TestSimulateLegacyTransactionFail(t *testing.T) {
+func TestOracleSimulateLegacyTransactionFail(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -865,7 +873,7 @@ func TestSimulateLegacyTransactionFail(t *testing.T) {
 	}
 }
 
-func TestSendVersionedTransactionAcceptsLegacyBytes(t *testing.T) {
+func TestOracleSendVersionedTransactionAcceptsLegacyBytes(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -895,7 +903,7 @@ func TestSendVersionedTransactionAcceptsLegacyBytes(t *testing.T) {
 	}
 }
 
-func TestSimulateVersionedTransactionAcceptsLegacyBytes(t *testing.T) {
+func TestOracleSimulateVersionedTransactionAcceptsLegacyBytes(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -924,7 +932,7 @@ func TestSimulateVersionedTransactionAcceptsLegacyBytes(t *testing.T) {
 	}
 }
 
-func TestGetTransaction(t *testing.T) {
+func TestOracleGetTransaction(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -969,7 +977,7 @@ func TestGetTransaction(t *testing.T) {
 	}
 }
 
-func TestInnerInstructionsFromTransfer(t *testing.T) {
+func TestOracleInnerInstructionsFromTransfer(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1012,7 +1020,7 @@ func TestInnerInstructionsFromTransfer(t *testing.T) {
 	}
 }
 
-func TestComputeBudgetGetUnsetThenSet(t *testing.T) {
+func TestOracleComputeBudgetGetUnsetThenSet(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1105,7 +1113,7 @@ func TestComputeBudgetGetUnsetThenSet(t *testing.T) {
 	}
 }
 
-func TestFeatureSetBasics(t *testing.T) {
+func TestOracleFeatureSetBasics(t *testing.T) {
 	fs, err := NewFeatureSet()
 	if err != nil {
 		t.Fatalf("NewFeatureSet: %v", err)
@@ -1148,7 +1156,7 @@ func TestFeatureSetBasics(t *testing.T) {
 	}
 }
 
-func TestFeatureSetAllEnabled(t *testing.T) {
+func TestOracleFeatureSetAllEnabled(t *testing.T) {
 	fs, err := NewFeatureSetAllEnabled()
 	if err != nil {
 		t.Fatalf("NewFeatureSetAllEnabled: %v", err)
@@ -1164,7 +1172,7 @@ func TestFeatureSetAllEnabled(t *testing.T) {
 	}
 }
 
-func TestSetFeatureSetOnSVM(t *testing.T) {
+func TestOracleSetFeatureSetOnSVM(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1203,7 +1211,7 @@ func TestSetFeatureSetOnSVM(t *testing.T) {
 	}
 }
 
-func TestEpochRewardsRoundtrip(t *testing.T) {
+func TestOracleEpochRewardsRoundtrip(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1243,7 +1251,7 @@ func TestEpochRewardsRoundtrip(t *testing.T) {
 	}
 }
 
-func TestSlotHashesRoundtrip(t *testing.T) {
+func TestOracleSlotHashesRoundtrip(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1281,7 +1289,7 @@ func TestSlotHashesRoundtrip(t *testing.T) {
 	}
 }
 
-func TestStakeHistoryRoundtrip(t *testing.T) {
+func TestOracleStakeHistoryRoundtrip(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1315,7 +1323,7 @@ func TestStakeHistoryRoundtrip(t *testing.T) {
 	}
 }
 
-func TestStakeHistoryCanonicalized(t *testing.T) {
+func TestOracleStakeHistoryCanonicalized(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1362,7 +1370,7 @@ func TestStakeHistoryCanonicalized(t *testing.T) {
 	}
 }
 
-func TestSlotHashesCanonicalized(t *testing.T) {
+func TestOracleSlotHashesCanonicalized(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1393,7 +1401,7 @@ func TestSlotHashesCanonicalized(t *testing.T) {
 	}
 }
 
-func TestSysvarSettersRejectNil(t *testing.T) {
+func TestOracleSysvarSettersRejectNil(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1421,7 +1429,7 @@ func TestSysvarSettersRejectNil(t *testing.T) {
 	}
 }
 
-func TestSlotHistoryOps(t *testing.T) {
+func TestOracleSlotHistoryOps(t *testing.T) {
 	sh := sysvar.NewSlotHistory()
 
 	// Default: next_slot 1, only slot 0 is recorded.
@@ -1449,7 +1457,7 @@ func TestSlotHistoryOps(t *testing.T) {
 	}
 }
 
-func TestSlotHistoryGetSetFromSVM(t *testing.T) {
+func TestOracleSlotHistoryGetSetFromSVM(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1482,7 +1490,7 @@ func TestSlotHistoryGetSetFromSVM(t *testing.T) {
 	}
 }
 
-func TestSigverifyToggle(t *testing.T) {
+func TestOracleSigverifyToggle(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1506,7 +1514,7 @@ func TestSigverifyToggle(t *testing.T) {
 
 // With sigverify disabled, a transaction with garbage signatures should still
 // be accepted (as long as everything else is valid).
-func TestSigverifyDisabledAcceptsBadSig(t *testing.T) {
+func TestOracleSigverifyDisabledAcceptsBadSig(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1553,7 +1561,7 @@ func TestSigverifyDisabledAcceptsBadSig(t *testing.T) {
 	}
 }
 
-func TestTransactionHistoryDisabled(t *testing.T) {
+func TestOracleTransactionHistoryDisabled(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1594,7 +1602,7 @@ func TestTransactionHistoryDisabled(t *testing.T) {
 	}
 }
 
-func TestSetLamports(t *testing.T) {
+func TestOracleSetLamports(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1611,7 +1619,7 @@ func TestSetLamports(t *testing.T) {
 	}
 }
 
-func TestSetLogBytesLimitAndSetters(t *testing.T) {
+func TestOracleSetLogBytesLimitAndSetters(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1643,7 +1651,7 @@ func TestSetLogBytesLimitAndSetters(t *testing.T) {
 	}
 }
 
-func TestWithNativeMints(t *testing.T) {
+func TestOracleWithNativeMints(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1674,7 +1682,7 @@ func TestWithNativeMints(t *testing.T) {
 	}
 }
 
-func TestAddProgramWithLoader(t *testing.T) {
+func TestOracleAddProgramWithLoader(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1704,7 +1712,7 @@ func TestAddProgramWithLoader(t *testing.T) {
 	}
 }
 
-func TestAddProgramRejectsGarbage(t *testing.T) {
+func TestOracleAddProgramRejectsGarbage(t *testing.T) {
 	svm, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
