@@ -2,7 +2,7 @@ module github.com/LiteSVM/litesvm-go
 
 go 1.24.0
 
-require github.com/gagliardetto/solana-go v1.21.0
+require github.com/gagliardetto/solana-go v1.22.0
 
 require (
 	github.com/blendle/zapdriver v1.3.1 // indirect
