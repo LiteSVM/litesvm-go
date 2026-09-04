@@ -1,4 +1,4 @@
-package mithrilsvm
+package litesvm
 
 import (
 	"github.com/gagliardetto/solana-go"

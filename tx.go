@@ -1,4 +1,4 @@
-package mithrilsvm
+package litesvm
 
 import (
 	"encoding/binary"
@@ -43,10 +43,10 @@ func (s *LiteSVM) sendBytes(txBytes []byte, simulate, allowVersioned bool) (*TxO
 	if err != nil {
 		// The "decode Transaction" wording is load-bearing: callers match
 		// on the error text.
-		return nil, fmt.Errorf("%w: decode Transaction: %v", ErrMithrilSVM, err)
+		return nil, fmt.Errorf("%w: decode Transaction: %v", ErrLiteSVM, err)
 	}
 	if !allowVersioned && tx.Message.GetVersion() != solana.MessageVersionLegacy {
-		return nil, fmt.Errorf("%w: decode Transaction: versioned bytes passed to a legacy entry point", ErrMithrilSVM)
+		return nil, fmt.Errorf("%w: decode Transaction: versioned bytes passed to a legacy entry point", ErrLiteSVM)
 	}
 	return s.execute(tx, simulate)
 }

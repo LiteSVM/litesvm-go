@@ -1,4 +1,4 @@
-package mithrilsvm
+package litesvm
 
 import (
 	"encoding/binary"
@@ -63,7 +63,7 @@ func (s *LiteSVM) installSysvarDefaults() error {
 		FirstNormalSlot:          epochSchedule.FirstNormalSlot,
 	}).MarshalBinary()
 	if err != nil {
-		return fmt.Errorf("%w: marshal epoch schedule: %v", ErrMithrilSVM, err)
+		return fmt.Errorf("%w: marshal epoch schedule: %v", ErrLiteSVM, err)
 	}
 	if err := s.writeSysvarAccount(sealevel.SysvarEpochScheduleAddr, epochScheduleData); err != nil {
 		return err
@@ -92,7 +92,7 @@ func (s *LiteSVM) installSysvarDefaults() error {
 	s.cache.LastRestartSlot.Sysvar = &lastRestartSlot
 	lastRestartSlotData, err := (&sysvar.LastRestartSlot{}).MarshalBinary()
 	if err != nil {
-		return fmt.Errorf("%w: marshal last restart slot: %v", ErrMithrilSVM, err)
+		return fmt.Errorf("%w: marshal last restart slot: %v", ErrLiteSVM, err)
 	}
 	if err := s.writeSysvarAccount(sealevel.SysvarLastRestartSlotAddr, lastRestartSlotData); err != nil {
 		return err
@@ -134,7 +134,7 @@ func (s *LiteSVM) installStakeConfigAccount() error {
 		Owner:    addresses.ConfigProgramAddr,
 	}
 	if err := s.mem.SetAccount(&addr, acct); err != nil {
-		return fmt.Errorf("%w: write stake-config account: %v", ErrMithrilSVM, err)
+		return fmt.Errorf("%w: write stake-config account: %v", ErrLiteSVM, err)
 	}
 	return nil
 }
@@ -198,7 +198,7 @@ func (s *LiteSVM) writeSysvarAccount(addr [32]byte, data []byte) error {
 		Owner:    addresses.SysvarOwnerAddr,
 	}
 	if err := s.mem.SetAccount(&addr, acct); err != nil {
-		return fmt.Errorf("%w: write sysvar account: %v", ErrMithrilSVM, err)
+		return fmt.Errorf("%w: write sysvar account: %v", ErrLiteSVM, err)
 	}
 	s.setCacheAcct(addr, acct)
 	return nil
@@ -261,7 +261,7 @@ func isKnownSysvarID(addr [32]byte) bool {
 func (s *LiteSVM) getSysvarData(id solana.PublicKey) ([]byte, error) {
 	acct, err := s.mem.GetAccountWithoutLock(id)
 	if err != nil || acct == nil {
-		return nil, fmt.Errorf("%w: sysvar account %s not found", ErrMithrilSVM, id)
+		return nil, fmt.Errorf("%w: sysvar account %s not found", ErrLiteSVM, id)
 	}
 	return acct.Data, nil
 }
@@ -338,10 +338,10 @@ func (s *LiteSVM) refreshCache(id solana.PublicKey, data []byte) error {
 			s.cache.RecentBlockHashes.Sysvar = &v
 		}
 	default:
-		return fmt.Errorf("%w: unsupported sysvar id %s", ErrMithrilSVM, id)
+		return fmt.Errorf("%w: unsupported sysvar id %s", ErrLiteSVM, id)
 	}
 	if err != nil {
-		return fmt.Errorf("%w: decode sysvar %s: %v", ErrMithrilSVM, id, err)
+		return fmt.Errorf("%w: decode sysvar %s: %v", ErrLiteSVM, id, err)
 	}
 	return nil
 }
@@ -358,11 +358,11 @@ func (s *LiteSVM) Clock() (*sysvar.Clock, error) {
 
 func (s *LiteSVM) SetClock(c *sysvar.Clock) error {
 	if c == nil {
-		return fmt.Errorf("%w: SetClock: nil clock", ErrMithrilSVM)
+		return fmt.Errorf("%w: SetClock: nil clock", ErrLiteSVM)
 	}
 	b, err := c.MarshalBinary()
 	if err != nil {
-		return fmt.Errorf("%w: SetClock: marshal: %v", ErrMithrilSVM, err)
+		return fmt.Errorf("%w: SetClock: marshal: %v", ErrLiteSVM, err)
 	}
 	return s.setSysvarData(sysvar.ClockID, b)
 }
@@ -377,11 +377,11 @@ func (s *LiteSVM) Rent() (*sysvar.Rent, error) {
 
 func (s *LiteSVM) SetRent(r *sysvar.Rent) error {
 	if r == nil {
-		return fmt.Errorf("%w: SetRent: nil rent", ErrMithrilSVM)
+		return fmt.Errorf("%w: SetRent: nil rent", ErrLiteSVM)
 	}
 	b, err := r.MarshalBinary()
 	if err != nil {
-		return fmt.Errorf("%w: SetRent: marshal: %v", ErrMithrilSVM, err)
+		return fmt.Errorf("%w: SetRent: marshal: %v", ErrLiteSVM, err)
 	}
 	return s.setSysvarData(sysvar.RentID, b)
 }
@@ -396,11 +396,11 @@ func (s *LiteSVM) EpochSchedule() (*sysvar.EpochSchedule, error) {
 
 func (s *LiteSVM) SetEpochSchedule(e *sysvar.EpochSchedule) error {
 	if e == nil {
-		return fmt.Errorf("%w: SetEpochSchedule: nil epoch schedule", ErrMithrilSVM)
+		return fmt.Errorf("%w: SetEpochSchedule: nil epoch schedule", ErrLiteSVM)
 	}
 	b, err := e.MarshalBinary()
 	if err != nil {
-		return fmt.Errorf("%w: SetEpochSchedule: marshal: %v", ErrMithrilSVM, err)
+		return fmt.Errorf("%w: SetEpochSchedule: marshal: %v", ErrLiteSVM, err)
 	}
 	return s.setSysvarData(sysvar.EpochScheduleID, b)
 }
@@ -415,11 +415,11 @@ func (s *LiteSVM) EpochRewards() (*sysvar.EpochRewards, error) {
 
 func (s *LiteSVM) SetEpochRewards(e *sysvar.EpochRewards) error {
 	if e == nil {
-		return fmt.Errorf("%w: SetEpochRewards: nil epoch rewards", ErrMithrilSVM)
+		return fmt.Errorf("%w: SetEpochRewards: nil epoch rewards", ErrLiteSVM)
 	}
 	b, err := e.MarshalBinary()
 	if err != nil {
-		return fmt.Errorf("%w: SetEpochRewards: marshal: %v", ErrMithrilSVM, err)
+		return fmt.Errorf("%w: SetEpochRewards: marshal: %v", ErrLiteSVM, err)
 	}
 	return s.setSysvarData(sysvar.EpochRewardsID, b)
 }
@@ -434,11 +434,11 @@ func (s *LiteSVM) LastRestartSlot() (*sysvar.LastRestartSlot, error) {
 
 func (s *LiteSVM) SetLastRestartSlot(l *sysvar.LastRestartSlot) error {
 	if l == nil {
-		return fmt.Errorf("%w: SetLastRestartSlot: nil last restart slot", ErrMithrilSVM)
+		return fmt.Errorf("%w: SetLastRestartSlot: nil last restart slot", ErrLiteSVM)
 	}
 	b, err := l.MarshalBinary()
 	if err != nil {
-		return fmt.Errorf("%w: SetLastRestartSlot: marshal: %v", ErrMithrilSVM, err)
+		return fmt.Errorf("%w: SetLastRestartSlot: marshal: %v", ErrLiteSVM, err)
 	}
 	return s.setSysvarData(sysvar.LastRestartSlotID, b)
 }
@@ -461,7 +461,7 @@ func (s *LiteSVM) SetSlotHashes(items sysvar.SlotHashes) error {
 	}
 	b, err := canonical.MarshalBinary()
 	if err != nil {
-		return fmt.Errorf("%w: SetSlotHashes: marshal: %v", ErrMithrilSVM, err)
+		return fmt.Errorf("%w: SetSlotHashes: marshal: %v", ErrLiteSVM, err)
 	}
 	return s.setSysvarData(sysvar.SlotHashesID, b)
 }
@@ -484,7 +484,7 @@ func (s *LiteSVM) SetStakeHistory(items sysvar.StakeHistory) error {
 	}
 	b, err := canonical.MarshalBinary()
 	if err != nil {
-		return fmt.Errorf("%w: SetStakeHistory: marshal: %v", ErrMithrilSVM, err)
+		return fmt.Errorf("%w: SetStakeHistory: marshal: %v", ErrLiteSVM, err)
 	}
 	return s.setSysvarData(sysvar.StakeHistoryID, b)
 }
@@ -501,16 +501,16 @@ func (s *LiteSVM) SlotHistory() (*sysvar.SlotHistory, error) {
 // SetSlotHistory replaces the SlotHistory sysvar.
 func (s *LiteSVM) SetSlotHistory(sh *sysvar.SlotHistory) error {
 	if sh == nil {
-		return fmt.Errorf("%w: SetSlotHistory: nil history", ErrMithrilSVM)
+		return fmt.Errorf("%w: SetSlotHistory: nil history", ErrLiteSVM)
 	}
 	// The sysvar is a fixed-size bitvec; reject a malformed one rather than
 	// install a wrong-length account that programs would misread.
 	if want := sysvar.SlotHistoryMaxEntries / 64; len(sh.Bits) != want {
-		return fmt.Errorf("%w: SetSlotHistory: malformed bitvec: %d blocks, want %d", ErrMithrilSVM, len(sh.Bits), want)
+		return fmt.Errorf("%w: SetSlotHistory: malformed bitvec: %d blocks, want %d", ErrLiteSVM, len(sh.Bits), want)
 	}
 	b, err := sh.MarshalBinary()
 	if err != nil {
-		return fmt.Errorf("%w: SetSlotHistory: marshal: %v", ErrMithrilSVM, err)
+		return fmt.Errorf("%w: SetSlotHistory: marshal: %v", ErrLiteSVM, err)
 	}
 	return s.setSysvarData(sysvar.SlotHistoryID, b)
 }

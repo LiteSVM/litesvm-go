@@ -14,8 +14,8 @@ import (
 	"github.com/gagliardetto/solana-go/sysvar"
 )
 
-// Tests do not call t.Parallel(): the suite runs serially to stay
-// byte-comparable with its oracle twin in mithrilsvm/oracle_test.go.
+// Tests do not call t.Parallel(): the suite runs serially so shared
+// engine state (sysvar cache, blockhash queue) stays deterministic.
 
 // A deterministic non-system-program owner used for SetAccount tests.
 var testOwner = solana.PublicKey{1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
@@ -25,7 +25,7 @@ var testOwner = solana.PublicKey{1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
 // loggingProgramPath returns the path of a valid SBF program ELF for the
 // AddProgram* tests. The shared node-litesvm fixture directory is preferred
 // when present; otherwise fall back to the module's own embedded ELF
-// fixtures (mithrilsvm/elf/spl_memo-3.0.0.so) so the AddProgram* paths are
+// fixtures (internal/elf/spl_memo-3.0.0.so) so the AddProgram* paths are
 // exercised instead of skipped. The assertions only require a valid
 // loadable program.
 func loggingProgramPath(t *testing.T) string {
@@ -37,7 +37,7 @@ func loggingProgramPath(t *testing.T) string {
 	if _, err := os.Stat(orig); err == nil {
 		return orig
 	}
-	fallback, err := filepath.Abs(filepath.Join("mithrilsvm", "elf", "spl_memo-3.0.0.so"))
+	fallback, err := filepath.Abs(filepath.Join("internal", "elf", "spl_memo-3.0.0.so"))
 	if err != nil {
 		t.Fatalf("abs path: %v", err)
 	}

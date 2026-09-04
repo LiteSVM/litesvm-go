@@ -1,4 +1,4 @@
-package mithrilsvm
+package litesvm
 
 import (
 	"crypto/sha256"
@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/LiteSVM/litesvm-go/mithrilsvm/elf"
-	"github.com/LiteSVM/litesvm-go/mithrilsvm/gates"
+	"github.com/LiteSVM/litesvm-go/internal/elf"
+	"github.com/LiteSVM/litesvm-go/internal/gates"
 )
 
 // TestFailedTxRecordedAndReplayRejected pins the litesvm history semantics

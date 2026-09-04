@@ -1,4 +1,4 @@
-package mithrilsvm
+package litesvm
 
 import (
 	"encoding/binary"
@@ -10,7 +10,7 @@ import (
 	"github.com/Overclock-Validator/mithril/pkg/sealevel"
 	"github.com/gagliardetto/solana-go"
 
-	"github.com/LiteSVM/litesvm-go/mithrilsvm/elf"
+	"github.com/LiteSVM/litesvm-go/internal/elf"
 )
 
 // toSolanaAccount converts a mithril account to the solana-go shape. Data is
@@ -52,7 +52,7 @@ func (s *LiteSVM) GetAccount(pubkey solana.PublicKey) *solana.Account {
 // does not affect engine state.
 func (s *LiteSVM) SetAccount(pubkey solana.PublicKey, acct *solana.Account) error {
 	if acct == nil {
-		return fmt.Errorf("%w: SetAccount: nil account", ErrMithrilSVM)
+		return fmt.Errorf("%w: SetAccount: nil account", ErrLiteSVM)
 	}
 	m := &accounts.Account{
 		Key:        pubkey,
@@ -86,9 +86,28 @@ func (s *LiteSVM) SetAccount(pubkey solana.PublicKey, acct *solana.Account) erro
 		return nil
 	}
 	if err := s.mem.SetAccount(&pk, m); err != nil {
-		return fmt.Errorf("%w: SetAccount: %v", ErrMithrilSVM, err)
+		return fmt.Errorf("%w: SetAccount: %v", ErrLiteSVM, err)
 	}
 	return nil
+}
+
+// NewAccount builds an account value for SetAccount. Accounts are plain
+// solana.Account structs, so a composite literal does the same job and is
+// usually clearer:
+//
+//	&solana.Account{Lamports: 1e9, Data: data, Owner: owner}
+//
+// This constructor exists so the documented API surface can be used
+// positionally. The error result is always nil; it is retained so callers
+// written against it keep compiling.
+func NewAccount(lamports uint64, data []byte, owner solana.PublicKey, executable bool, rentEpoch uint64) (*solana.Account, error) {
+	return &solana.Account{
+		Lamports:   lamports,
+		Data:       append([]byte(nil), data...),
+		Owner:      owner,
+		Executable: executable,
+		RentEpoch:  rentEpoch,
+	}, nil
 }
 
 // AddProgram installs an SBF program under the upgradeable loader,
@@ -97,7 +116,7 @@ func (s *LiteSVM) SetAccount(pubkey solana.PublicKey, acct *solana.Account) erro
 // invalid program bytes are rejected up front.
 func (s *LiteSVM) AddProgram(programID solana.PublicKey, programBytes []byte) error {
 	if err := sealevel.ValidateUpgradeableLoaderProgram(programBytes, s.feats); err != nil {
-		return fmt.Errorf("%w: add_program: invalid program bytes: %v", ErrMithrilSVM, err)
+		return fmt.Errorf("%w: add_program: invalid program bytes: %v", ErrLiteSVM, err)
 	}
 	return s.addProgramV3(programID, programBytes)
 }
@@ -106,7 +125,7 @@ func (s *LiteSVM) AddProgram(programID solana.PublicKey, programBytes []byte) er
 func (s *LiteSVM) AddProgramFromFile(programID solana.PublicKey, path string) error {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("%w: AddProgramFromFile: %v", ErrMithrilSVM, err)
+		return fmt.Errorf("%w: AddProgramFromFile: %v", ErrLiteSVM, err)
 	}
 	return s.AddProgram(programID, b)
 }
@@ -116,7 +135,7 @@ func (s *LiteSVM) AddProgramFromFile(programID solana.PublicKey, path string) er
 // (v3). Unknown loader ids are an error.
 func (s *LiteSVM) AddProgramWithLoader(programID solana.PublicKey, programBytes []byte, loader solana.PublicKey) error {
 	if len(programBytes) == 0 {
-		return fmt.Errorf("%w: AddProgramWithLoader: empty program bytes", ErrMithrilSVM)
+		return fmt.Errorf("%w: AddProgramWithLoader: empty program bytes", ErrLiteSVM)
 	}
 	switch [32]byte(loader) {
 	case addresses.BpfLoaderDeprecatedAddr:
@@ -128,7 +147,7 @@ func (s *LiteSVM) AddProgramWithLoader(programID solana.PublicKey, programBytes 
 		// same ELF verification as Rust litesvm's add_program.
 		return s.AddProgram(programID, programBytes)
 	default:
-		return fmt.Errorf("%w: AddProgramWithLoader: unknown loader %s", ErrMithrilSVM, loader)
+		return fmt.Errorf("%w: AddProgramWithLoader: unknown loader %s", ErrLiteSVM, loader)
 	}
 }
 
@@ -151,7 +170,7 @@ func (s *LiteSVM) addProgramV1V2(programID solana.PublicKey, programBytes []byte
 	}
 	pk := [32]byte(programID)
 	if err := s.mem.SetAccount(&pk, acct); err != nil {
-		return fmt.Errorf("%w: add program: %v", ErrMithrilSVM, err)
+		return fmt.Errorf("%w: add program: %v", ErrLiteSVM, err)
 	}
 	s.stubDb.RemoveProgramFromCache(programID)
 	return nil
@@ -163,7 +182,7 @@ func (s *LiteSVM) addProgramV3(programID solana.PublicKey, programBytes []byte) 
 	upgradeable := solana.PublicKey(addresses.BpfLoaderUpgradeableAddr)
 	programData, _, err := solana.FindProgramAddress([][]byte{programID[:]}, upgradeable)
 	if err != nil {
-		return fmt.Errorf("%w: derive programdata address: %v", ErrMithrilSVM, err)
+		return fmt.Errorf("%w: derive programdata address: %v", ErrLiteSVM, err)
 	}
 
 	// Program account: enum Program = 2, then the programdata address.
@@ -195,7 +214,7 @@ func (s *LiteSVM) addProgramV3(programID solana.PublicKey, programBytes []byte) 
 		Data:     pdData,
 		Owner:    addresses.BpfLoaderUpgradeableAddr,
 	}); err != nil {
-		return fmt.Errorf("%w: write programdata account: %v", ErrMithrilSVM, err)
+		return fmt.Errorf("%w: write programdata account: %v", ErrLiteSVM, err)
 	}
 
 	pk := [32]byte(programID)
@@ -206,7 +225,7 @@ func (s *LiteSVM) addProgramV3(programID solana.PublicKey, programBytes []byte) 
 		Owner:      addresses.BpfLoaderUpgradeableAddr,
 		Executable: true,
 	}); err != nil {
-		return fmt.Errorf("%w: write program account: %v", ErrMithrilSVM, err)
+		return fmt.Errorf("%w: write program account: %v", ErrLiteSVM, err)
 	}
 	// Mithril caches upgradeable-loader programs keyed on the canonical
 	// programdata address (bpf_loader.go); evict both keys so re-installing
@@ -231,7 +250,7 @@ func (s *LiteSVM) SetDefaultPrograms() error {
 		case elf.LoaderV3:
 			err = s.addProgramV3(p.ProgramID, p.Elf)
 		default:
-			err = fmt.Errorf("%w: unknown loader for %s", ErrMithrilSVM, p.Name)
+			err = fmt.Errorf("%w: unknown loader for %s", ErrLiteSVM, p.Name)
 		}
 		if err != nil {
 			return fmt.Errorf("install %s: %w", p.Name, err)
@@ -262,7 +281,7 @@ func (s *LiteSVM) WithNativeMints() error {
 		}
 		pk := [32]byte(p.mint)
 		if err := s.mem.SetAccount(&pk, acct); err != nil {
-			return fmt.Errorf("%w: seed native mint: %v", ErrMithrilSVM, err)
+			return fmt.Errorf("%w: seed native mint: %v", ErrLiteSVM, err)
 		}
 	}
 	return nil

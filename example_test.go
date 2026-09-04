@@ -153,12 +153,11 @@ func ExampleLiteSVM_SetAccount() {
 	_, owner := keypair(6)
 	_, address := keypair(7)
 
-	acct, err := litesvm.NewAccount(1_000_000_000, []byte("hello"), owner, false, 0)
-	if err != nil {
-		panic(err)
+	acct := &solana.Account{
+		Lamports: 1_000_000_000,
+		Data:     []byte("hello"),
+		Owner:    owner,
 	}
-	defer acct.Close()
-
 	if err := svm.SetAccount(address, acct); err != nil {
 		panic(err)
 	}
@@ -167,7 +166,6 @@ func ExampleLiteSVM_SetAccount() {
 	if got == nil {
 		panic("account not found")
 	}
-	defer got.Close()
-	fmt.Printf("%s %d\n", got.Data(), got.Lamports())
+	fmt.Printf("%s %d\n", got.Data, got.Lamports)
 	// Output: hello 1000000000
 }

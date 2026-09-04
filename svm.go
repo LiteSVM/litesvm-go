@@ -1,10 +1,4 @@
-// Package mithrilsvm is a pure-Go, in-process Solana VM for testing, built
-// on mithril's SVM (github.com/Overclock-Validator/mithril): sealevel
-// runtime, sbpf VM, and the pure transaction pipeline
-// replay.LoadAndExecuteTransaction. It is the engine behind the root
-// package: github.com/LiteSVM/litesvm-go re-exports these types as
-// aliases, so either import path can be used interchangeably.
-package mithrilsvm
+package litesvm
 
 import (
 	"crypto/sha256"
@@ -19,7 +13,7 @@ import (
 	"github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/programs/system"
 
-	"github.com/LiteSVM/litesvm-go/mithrilsvm/gates"
+	"github.com/LiteSVM/litesvm-go/internal/gates"
 )
 
 const (
@@ -50,10 +44,10 @@ const (
 // validation with BlockhashNotFound, exactly like Rust litesvm.
 var latestEvictedSentinel = sha256.Sum256([]byte("mithrilsvm:latest-evicted-blockhash-sentinel"))
 
-// ErrMithrilSVM is the sentinel wrapped by every error this package
+// ErrLiteSVM is the sentinel wrapped by every error this package
 // returns. It is the same value as the root package's ErrLiteSVM, and its
 // message is "litesvm" so wrapped errors read "litesvm: ...".
-var ErrMithrilSVM = errors.New("litesvm")
+var ErrLiteSVM = errors.New("litesvm")
 
 // LiteSVM is a pure-Go, in-process Solana VM for testing. Instances are
 // fully isolated from each other (per-instance accounts, sysvar cache,
@@ -137,7 +131,7 @@ func New() (*LiteSVM, error) {
 
 	airdropKey, err := solana.NewRandomPrivateKey()
 	if err != nil {
-		return nil, fmt.Errorf("%w: airdrop key: %v", ErrMithrilSVM, err)
+		return nil, fmt.Errorf("%w: airdrop key: %v", ErrLiteSVM, err)
 	}
 	s.airdropKey = airdropKey
 	s.setPlainAccount(airdropKey.PublicKey(), defaultAirdropLamports)
@@ -225,7 +219,7 @@ func (s *LiteSVM) installFeatureAccounts() error {
 			Owner:    addresses.FeatureAddr,
 		}
 		if err := s.mem.SetAccount(&pk, acct); err != nil {
-			return fmt.Errorf("%w: write feature account: %v", ErrMithrilSVM, err)
+			return fmt.Errorf("%w: write feature account: %v", ErrLiteSVM, err)
 		}
 	}
 	return nil
@@ -336,7 +330,7 @@ func (s *LiteSVM) syncRecentBlockhashes() error {
 // LatestBlockhash returns the most recent registered blockhash.
 func (s *LiteSVM) LatestBlockhash() (solana.Hash, error) {
 	if len(s.blockhashes) == 0 {
-		return solana.Hash{}, fmt.Errorf("%w: no blockhash registered", ErrMithrilSVM)
+		return solana.Hash{}, fmt.Errorf("%w: no blockhash registered", ErrLiteSVM)
 	}
 	return s.blockhashes[0], nil
 }
@@ -382,7 +376,7 @@ func (s *LiteSVM) Airdrop(pubkey solana.PublicKey, lamports uint64) error {
 		solana.TransactionPayer(s.airdropKey.PublicKey()),
 	)
 	if err != nil {
-		return fmt.Errorf("%w: airdrop build: %v", ErrMithrilSVM, err)
+		return fmt.Errorf("%w: airdrop build: %v", ErrLiteSVM, err)
 	}
 	if _, err = tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
 		if key.Equals(s.airdropKey.PublicKey()) {
@@ -390,14 +384,14 @@ func (s *LiteSVM) Airdrop(pubkey solana.PublicKey, lamports uint64) error {
 		}
 		return nil
 	}); err != nil {
-		return fmt.Errorf("%w: airdrop sign: %v", ErrMithrilSVM, err)
+		return fmt.Errorf("%w: airdrop sign: %v", ErrLiteSVM, err)
 	}
 	outcome, err := s.execute(tx, false)
 	if err != nil {
 		return err
 	}
 	if !outcome.IsOk() {
-		return fmt.Errorf("%w: airdrop failed: %s", ErrMithrilSVM, outcome.Error())
+		return fmt.Errorf("%w: airdrop failed: %s", ErrLiteSVM, outcome.Error())
 	}
 	return nil
 }
@@ -416,10 +410,10 @@ func (s *LiteSVM) Balance(pubkey solana.PublicKey) (uint64, bool, error) {
 // account of the given data length using the current Rent sysvar.
 func (s *LiteSVM) MinimumBalanceForRentExemption(dataLen int) (uint64, error) {
 	if s.cache.Rent.Sysvar == nil {
-		return 0, fmt.Errorf("%w: rent sysvar not installed", ErrMithrilSVM)
+		return 0, fmt.Errorf("%w: rent sysvar not installed", ErrLiteSVM)
 	}
 	if dataLen < 0 {
-		return 0, fmt.Errorf("%w: negative data length", ErrMithrilSVM)
+		return 0, fmt.Errorf("%w: negative data length", ErrLiteSVM)
 	}
 	return s.cache.Rent.Sysvar.MinimumBalance(uint64(dataLen)), nil
 }
@@ -445,7 +439,7 @@ func (s *LiteSVM) SetBlockhashCheck(enabled bool) error {
 // history and with it duplicate-transaction detection.
 func (s *LiteSVM) SetTransactionHistory(capacity int) error {
 	if capacity < 0 {
-		return fmt.Errorf("%w: negative history capacity", ErrMithrilSVM)
+		return fmt.Errorf("%w: negative history capacity", ErrLiteSVM)
 	}
 	s.historyCap = capacity
 	if capacity == 0 {

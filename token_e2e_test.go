@@ -1,4 +1,4 @@
-package mithrilsvm
+package litesvm
 
 import (
 	"encoding/binary"
@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/LiteSVM/litesvm-go/mithrilsvm/elf"
+	"github.com/LiteSVM/litesvm-go/internal/elf"
 )
 
 const (

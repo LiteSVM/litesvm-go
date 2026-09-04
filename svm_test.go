@@ -1,4 +1,4 @@
-package mithrilsvm
+package litesvm
 
 import (
 	"strings"
@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/LiteSVM/litesvm-go/mithrilsvm/elf"
+	"github.com/LiteSVM/litesvm-go/internal/elf"
 )
 
 func mustNew(t *testing.T) *LiteSVM {
@@ -37,22 +37,6 @@ func signedTransfer(t *testing.T, svm *LiteSVM, from solana.PrivateKey, to solan
 	b, err := tx.MarshalBinary()
 	require.NoError(t, err)
 	return b
-}
-
-func TestAirdropAndBalance(t *testing.T) {
-	svm := mustNew(t)
-	w := solana.NewWallet()
-
-	require.NoError(t, svm.Airdrop(w.PublicKey(), 5*lamportsPerSol))
-
-	bal, exists, err := svm.Balance(w.PublicKey())
-	require.NoError(t, err)
-	require.True(t, exists)
-	assert.Equal(t, uint64(5*lamportsPerSol), bal)
-
-	_, exists, err = svm.Balance(solana.NewWallet().PublicKey())
-	require.NoError(t, err)
-	assert.False(t, exists)
 }
 
 func TestTransferSendAndHistory(t *testing.T) {
@@ -107,7 +91,7 @@ func TestSimulateDoesNotCommit(t *testing.T) {
 	assert.False(t, exists, "simulation must not commit state")
 }
 
-func TestSigverifyToggle(t *testing.T) {
+func TestSigverifyEnforcement(t *testing.T) {
 	svm := mustNew(t)
 	payer := solana.NewWallet()
 	recipient := solana.NewWallet()
@@ -219,7 +203,7 @@ func TestMemoProgramExecutes(t *testing.T) {
 	blockhash, err := svm.LatestBlockhash()
 	require.NoError(t, err)
 
-	ix := solana.NewInstruction(memoProgram, solana.AccountMetaSlice{}, []byte("hello from mithrilsvm"))
+	ix := solana.NewInstruction(memoProgram, solana.AccountMetaSlice{}, []byte("hello from litesvm"))
 	tx, err := solana.NewTransaction([]solana.Instruction{ix}, blockhash,
 		solana.TransactionPayer(payer.PublicKey()))
 	require.NoError(t, err)
@@ -240,7 +224,7 @@ func TestMemoProgramExecutes(t *testing.T) {
 	assert.Greater(t, outcome.ComputeUnits(), uint64(150))
 
 	joined := strings.Join(outcome.Logs(), "\n")
-	assert.Contains(t, joined, "hello from mithrilsvm")
+	assert.Contains(t, joined, "hello from litesvm")
 }
 
 // TestInstanceIsolation runs two engines side by side: state is fully

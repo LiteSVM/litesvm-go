@@ -116,10 +116,12 @@ func TestTransfer(t *testing.T) {
 
 ## Contributing
 
-Everything is plain Go: clone and run `go test -count=1 ./...`. New API
-goes in the `mithrilsvm` package (the engine), is re-exported from
-`litesvm.go`, and gets tests in `litesvm_test.go` plus its oracle twin
-`mithrilsvm/oracle_test.go`.
+Everything is plain Go: clone and run `go test -count=1 ./...`. The root
+package is the entire public API; the engine internals live alongside it
+and the vendored program ELFs and feature-gate table live under
+`internal/`. New API goes in the root package with tests in
+`litesvm_test.go`. Benchmarks for the common workloads are in
+`bench_test.go` (`go test -run '^$' -bench .`).
 
 ## License
 

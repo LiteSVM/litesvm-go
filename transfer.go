@@ -1,4 +1,4 @@
-package mithrilsvm
+package litesvm
 
 import (
 	"crypto/ed25519"

@@ -1,4 +1,4 @@
-package mithrilsvm
+package litesvm
 
 import (
 	"fmt"
@@ -145,20 +145,20 @@ func (s *LiteSVM) SetComputeBudget(b ComputeBudget) error {
 
 	if b.ComputeUnitLimit > sealevel.MaxComputeUnitLimit {
 		return fmt.Errorf("%w: SetComputeBudget: ComputeUnitLimit %d exceeds the %d cap mithril enforces",
-			ErrMithrilSVM, b.ComputeUnitLimit, uint64(sealevel.MaxComputeUnitLimit))
+			ErrLiteSVM, b.ComputeUnitLimit, uint64(sealevel.MaxComputeUnitLimit))
 	}
 	if b.HeapSize < sealevel.MinHeapFrameBytes || b.HeapSize > sealevel.MaxHeapFrameBytes ||
 		b.HeapSize%sealevel.HeapFrameBytesMultiple != 0 {
 		return fmt.Errorf("%w: SetComputeBudget: HeapSize %d is not a multiple of 1024 in [%d, %d]",
-			ErrMithrilSVM, b.HeapSize, uint64(sealevel.MinHeapFrameBytes), uint64(sealevel.MaxHeapFrameBytes))
+			ErrLiteSVM, b.HeapSize, uint64(sealevel.MinHeapFrameBytes), uint64(sealevel.MaxHeapFrameBytes))
 	}
 	if b.MaxInstructionStackDepth != def.MaxInstructionStackDepth {
 		return fmt.Errorf("%w: SetComputeBudget: MaxInstructionStackDepth is hardcoded to %d by mithril's replay package (got %d)",
-			ErrMithrilSVM, def.MaxInstructionStackDepth, b.MaxInstructionStackDepth)
+			ErrLiteSVM, def.MaxInstructionStackDepth, b.MaxInstructionStackDepth)
 	}
 	if b.MaxInstructionTraceLength != def.MaxInstructionTraceLength {
 		return fmt.Errorf("%w: SetComputeBudget: MaxInstructionTraceLength is hardcoded to %d by mithril's replay package (got %d)",
-			ErrMithrilSVM, def.MaxInstructionTraceLength, b.MaxInstructionTraceLength)
+			ErrLiteSVM, def.MaxInstructionTraceLength, b.MaxInstructionTraceLength)
 	}
 
 	// All remaining fields are execution cost constants mithril does not
@@ -211,7 +211,7 @@ func (s *LiteSVM) SetComputeBudget(b ComputeBudget) error {
 	for _, f := range fixed {
 		if f.got != f.want {
 			return fmt.Errorf("%w: SetComputeBudget: %s is a fixed mithril cost constant (%d) and cannot be set to %d",
-				ErrMithrilSVM, f.name, f.want, f.got)
+				ErrLiteSVM, f.name, f.want, f.got)
 		}
 	}
 

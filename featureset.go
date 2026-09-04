@@ -1,4 +1,4 @@
-package mithrilsvm
+package litesvm
 
 import (
 	"bytes"
@@ -8,7 +8,7 @@ import (
 	"github.com/Overclock-Validator/mithril/pkg/features"
 	"github.com/gagliardetto/solana-go"
 
-	"github.com/LiteSVM/litesvm-go/mithrilsvm/gates"
+	"github.com/LiteSVM/litesvm-go/internal/gates"
 )
 
 // FeatureSet describes which runtime features are enabled: active feature
@@ -78,7 +78,7 @@ func (fs *FeatureSet) ActivatedSlot(featureID solana.PublicKey) (uint64, bool) {
 // compatibility.
 func (fs *FeatureSet) Activate(featureID solana.PublicKey, slot uint64) error {
 	if fs == nil {
-		return fmt.Errorf("%w: Activate: nil feature set", ErrMithrilSVM)
+		return fmt.Errorf("%w: Activate: nil feature set", ErrLiteSVM)
 	}
 	if fs.active == nil {
 		fs.active = make(map[solana.PublicKey]uint64)
@@ -92,7 +92,7 @@ func (fs *FeatureSet) Activate(featureID solana.PublicKey, slot uint64) error {
 // only for a nil receiver and is retained for backward compatibility.
 func (fs *FeatureSet) Deactivate(featureID solana.PublicKey) error {
 	if fs == nil {
-		return fmt.Errorf("%w: Deactivate: nil feature set", ErrMithrilSVM)
+		return fmt.Errorf("%w: Deactivate: nil feature set", ErrLiteSVM)
 	}
 	if fs.inactive == nil {
 		fs.inactive = make(map[solana.PublicKey]struct{})
@@ -161,7 +161,7 @@ func (fs *FeatureSet) InactiveFeatures() []solana.PublicKey {
 // and leaves the accounts from with_feature_accounts untouched.
 func (s *LiteSVM) SetFeatureSet(f *FeatureSet) error {
 	if f == nil {
-		return fmt.Errorf("%w: SetFeatureSet: nil feature set", ErrMithrilSVM)
+		return fmt.Errorf("%w: SetFeatureSet: nil feature set", ErrLiteSVM)
 	}
 	feats := features.NewFeaturesDefault()
 	for _, gate := range features.AllFeatureGates {
