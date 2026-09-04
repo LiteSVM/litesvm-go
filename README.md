@@ -103,9 +103,10 @@ func TestTransfer(t *testing.T) {
 
 ## Notes
 
-- The engine is
-  [mithril](https://github.com/Overclock-Validator/mithril)'s SVM,
-  running as pure Go inside your test process.
+- The engine is [mithril](https://github.com/Overclock-Validator/mithril)'s
+  SVM, running as pure Go inside your test process. It is consumed from the
+  [sonicfromnewyoke/mithril](https://github.com/sonicfromnewyoke/mithril)
+  fork, which carries the patches this package needs.
 - Transaction error strings (`TxOutcome.Error`) are Agave wire-format
   JSON, e.g. `{"InstructionError":[0,{"Custom":1}]}`.
 - `SetComputeBudget` honors `ComputeUnitLimit` and `HeapSize` only; every

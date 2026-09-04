@@ -194,8 +194,8 @@ github.com/shopspring/decimal v1.3.1 h1:2Usl1nmF/WZucqkFZhnfFYxxxu8LG21F6nPQBE5g
 github.com/shopspring/decimal v1.3.1/go.mod h1:DKyhrW/HYNuLGql+MJL6WCR6knT2jwCFRcu2hWCYk4o=
 github.com/smcio/go-ethereum v1.15.12-0.20250621134551-8b739407bb93 h1:SyVKMYtLvEIo1v/rVlHXu9c+DLDuad6rGZedFTsvT9c=
 github.com/smcio/go-ethereum v1.15.12-0.20250621134551-8b739407bb93/go.mod h1:Yt8yVvAdi0Bzks6fBid2WM6MXbP5VRYPUJRKYCylDw4=
-github.com/sonicfromnewyoke/mithril v0.0.0-20260717121410-2eccb10966f5 h1:NZGbLOYPxT+e0u5uFmftWzOpiKTlIAK88rxHWHKKVvw=
-github.com/sonicfromnewyoke/mithril v0.0.0-20260717121410-2eccb10966f5/go.mod h1:gHrTVF+95UwaoIGF87vX3SVrbG3sUGQAg9GKQfw8AaQ=
+github.com/sonicfromnewyoke/mithril v0.0.0-20260904214740-1faedf56e5dc h1:7E7PO3zbWhu5G8rikpo4VdoM9lOzBwn+3T4SHmX0+Ek=
+github.com/sonicfromnewyoke/mithril v0.0.0-20260904214740-1faedf56e5dc/go.mod h1:5jwciRa4d2AKjZJblPj1MnhuOEVxTT/VbL0bZdJae10=
 github.com/sourcegraph/conc v0.3.1-0.20240121214520-5f936abd7ae8 h1:+jumHNA0Wrelhe64i8F6HNlS8pkoyMv5sreGx2Ry5Rw=
 github.com/sourcegraph/conc v0.3.1-0.20240121214520-5f936abd7ae8/go.mod h1:3n1Cwaq1E1/1lhQhtRK2ts/ZwZEhjcQeJQ1RuC6Q/8U=
 github.com/spf13/afero v1.15.0 h1:b/YBCLWAJdFWJTN9cLhiXXcD7mzKn9Dm86dNnfyQw1I=

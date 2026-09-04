@@ -3,9 +3,9 @@ module github.com/LiteSVM/litesvm-go
 go 1.25.7
 
 require (
-	github.com/Overclock-Validator/mithril v0.3.0
 	github.com/gagliardetto/binary v0.8.0
 	github.com/gagliardetto/solana-go v1.23.0
+	github.com/sonicfromnewyoke/mithril v0.0.0-20260904214740-1faedf56e5dc
 	github.com/stretchr/testify v1.11.1
 )
 
@@ -110,8 +110,3 @@ require (
 	k8s.io/klog/v2 v2.100.1 // indirect
 	rsc.io/tmplfunc v0.0.3 // indirect
 )
-
-// The mithril dependency is consumed through a local checkout until the
-// fork is published under its own module path (see
-// docs/migration/packaging.md, Option A).
-replace github.com/Overclock-Validator/mithril => github.com/sonicfromnewyoke/mithril v0.0.0-20260717121410-2eccb10966f5

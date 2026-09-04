@@ -1,7 +1,3 @@
-# solana-go resolves from upstream gagliardetto/solana-go; mithril resolves
-# via a go.mod replace directive pointing at the public
-# sonicfromnewyoke/mithril fork.
-
 name: build
 on:
   push:
