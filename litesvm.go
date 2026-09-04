@@ -4,7 +4,7 @@
 // boots in milliseconds and runs in the same process as the test.
 //
 // The package is pure Go. The engine is mithril's SVM
-// (github.com/Overclock-Validator/mithril): sealevel runtime, sbpf VM, and
+// (github.com/sonicfromnewyoke/mithril): sealevel runtime, sbpf VM, and
 // the pure transaction pipeline replay.LoadAndExecuteTransaction. That
 // dependency is an implementation detail and never appears in this
 // package's API.

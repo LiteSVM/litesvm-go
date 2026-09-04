@@ -3,7 +3,7 @@ package litesvm
 import (
 	"fmt"
 
-	"github.com/Overclock-Validator/mithril/pkg/sealevel"
+	"github.com/sonicfromnewyoke/mithril/pkg/sealevel"
 )
 
 // ComputeBudget mirrors litesvm-go's ComputeBudget (itself a mirror of
