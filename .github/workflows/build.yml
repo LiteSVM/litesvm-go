@@ -1,3 +1,7 @@
+# solana-go resolves from upstream gagliardetto/solana-go; mithril resolves
+# via a go.mod replace directive pointing at the public
+# sonicfromnewyoke/mithril fork.
+
 name: build
 on:
   push:
@@ -22,30 +26,48 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        go: ['1.24', '1.25', '1.26']
+        go: ['1.25', '1.26', '1.27']
     steps:
       - uses: actions/checkout@v6
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go }}
           cache-dependency-path: go.sum
+      - name: go vet
+        run: go vet ./...
       - name: Run Go tests
-        env:
-          RUST_BACKTRACE: 1
-        run: go test -v ./...
+        run: go test -count=1 ./...
 
   race:
-    name: Test (race) - ubuntu / Go 1.25
+    name: Test (race) - ubuntu / Go 1.26
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
-          go-version: '1.25'
+          go-version: '1.26'
           cache-dependency-path: go.sum
       - name: Run Go tests with race detector
+        run: go test -count=1 -race ./...
+
+  cross-compile:
+    name: Cross-compile check (no cgo)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.26'
+          cache-dependency-path: go.sum
+      - name: Build for all platforms
         env:
-          RUST_BACKTRACE: 1
-        run: go test -race -count=1 ./...
+          CGO_ENABLED: '0'
+        run: |
+          GOOS=linux   GOARCH=amd64 go build ./...
+          GOOS=linux   GOARCH=arm64 go build ./...
+          GOOS=darwin  GOARCH=amd64 go build ./...
+          GOOS=darwin  GOARCH=arm64 go build ./...
+          GOOS=windows GOARCH=amd64 go build ./...

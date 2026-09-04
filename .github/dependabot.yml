@@ -13,20 +13,6 @@ updates:
           - minor
           - patch
 
-  - package-ecosystem: cargo
-    directory: /
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
-    commit-message:
-      prefix: deps(cargo)
-    groups:
-      solana:
-        patterns:
-          - "solana-*"
-          - "agave-*"
-          - "litesvm"
-
   - package-ecosystem: github-actions
     directory: /
     schedule:

@@ -6,15 +6,13 @@ import (
 )
 
 // FuzzSendLegacyTransaction explores the bincode decoder + signature
-// verifier path inside SendLegacyTransaction. The Rust side returns a
-// non-nil error for malformed bytes; any input that crashes the host
-// process (panic_immediate_abort) will be captured by the fuzzer as a
-// failing seed.
+// verifier path inside SendLegacyTransaction. The engine returns a non-nil
+// error for malformed bytes; any input that panics the pure-Go engine will
+// be captured by the fuzzer as a failing seed.
 //
 // Each iteration constructs its own LiteSVM because the type is not safe
 // for concurrent use and the Go fuzzer schedules iterations across
-// multiple workers. The setup cost is amortized by typical fuzz runtimes
-// (millions of iterations).
+// multiple workers.
 func FuzzSendLegacyTransaction(f *testing.F) {
 	// Seeds: empty, garbage, plausible-but-wrong-shape.
 	f.Add([]byte{})
