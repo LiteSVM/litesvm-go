@@ -20,7 +20,7 @@ type TxOutcome struct {
 	returnDataProgramID solana.PublicKey
 	returnData          []byte
 	logs                []string
-	inner               solana.InnerInstructionsList
+	inner               InnerInstructionsList
 	postAccounts        []PostAccount
 }
 
@@ -93,7 +93,7 @@ func (o *TxOutcome) ReturnData() (solana.PublicKey, []byte, bool) {
 }
 
 // InnerInstructions returns recorded CPIs grouped by top-level instruction.
-func (o *TxOutcome) InnerInstructions() solana.InnerInstructionsList {
+func (o *TxOutcome) InnerInstructions() InnerInstructionsList {
 	if o == nil {
 		return nil
 	}

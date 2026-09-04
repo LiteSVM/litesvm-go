@@ -46,6 +46,14 @@ type TxOutcome = mithrilsvm.TxOutcome
 // simulation.
 type PostAccount = mithrilsvm.PostAccount
 
+// InnerInstruction is one cross-program invocation (CPI) recorded while a
+// transaction executed, together with the stack height at which it ran.
+type InnerInstruction = mithrilsvm.InnerInstruction
+
+// InnerInstructionsList groups the recorded CPIs of one transaction, indexed
+// by top-level instruction.
+type InnerInstructionsList = mithrilsvm.InnerInstructionsList
+
 // ComputeBudget mirrors solana_compute_budget::compute_budget::ComputeBudget.
 // Fields typed as `usize` on the Solana side are surfaced as uint64;
 // HeapSize stays uint32.

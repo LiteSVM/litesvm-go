@@ -10,11 +10,9 @@ replace github.com/LiteSVM/litesvm-go => ..
 
 replace github.com/Overclock-Validator/mithril => github.com/sonicfromnewyoke/mithril v0.0.0-20260717121410-2eccb10966f5
 
-replace github.com/gagliardetto/solana-go => github.com/sonicfromnewyoke/solana-go v0.0.0-20260716221031-e57373b5124f
-
 require (
 	github.com/LiteSVM/litesvm-go v0.0.0-00010101000000-000000000000
-	github.com/gagliardetto/solana-go v1.21.0
+	github.com/gagliardetto/solana-go v1.23.0
 	github.com/stretchr/testify v1.11.1
 )
 
@@ -98,7 +96,6 @@ require (
 	github.com/subosito/gotenv v1.6.0 // indirect
 	github.com/tidwall/btree v1.7.0 // indirect
 	github.com/twmb/murmur3 v1.1.8 // indirect
-	github.com/tyler-smith/go-bip39 v1.1.0 // indirect
 	github.com/zeebo/blake3 v0.2.3 // indirect
 	go.mongodb.org/mongo-driver/v2 v2.5.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect

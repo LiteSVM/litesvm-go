@@ -557,8 +557,8 @@ func (s *LiteSVM) populateOutcome(o *TxOutcome, tx *solana.Transaction, out *rep
 // innerFromGroups converts mithril's grouped inner-instruction recording
 // into the solana-go response shape, one (possibly empty) list per top-level
 // instruction.
-func innerFromGroups(numInstrs int, groups []replay.InnerInstructionsList) solana.InnerInstructionsList {
-	inner := make(solana.InnerInstructionsList, numInstrs)
+func innerFromGroups(numInstrs int, groups []replay.InnerInstructionsList) InnerInstructionsList {
+	inner := make(InnerInstructionsList, numInstrs)
 	for _, group := range groups {
 		if int(group.Index) >= len(inner) {
 			continue
@@ -568,7 +568,7 @@ func innerFromGroups(numInstrs int, groups []replay.InnerInstructionsList) solan
 			for i, a := range instr.Accounts {
 				accts[i] = uint16(a)
 			}
-			inner[group.Index] = append(inner[group.Index], solana.InnerInstruction{
+			inner[group.Index] = append(inner[group.Index], InnerInstruction{
 				Instruction: solana.CompiledInstruction{
 					ProgramIDIndex: uint16(instr.ProgramIdIndex),
 					Accounts:       accts,

@@ -1110,7 +1110,6 @@ func TestFeatureSetBasics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFeatureSet: %v", err)
 	}
-	defer fs.Close()
 
 	// A brand-new default feature set has inactives but no actives.
 	if fs.ActiveCount() != 0 {
@@ -1153,7 +1152,6 @@ func TestFeatureSetAllEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFeatureSetAllEnabled: %v", err)
 	}
-	defer fs.Close()
 
 	if fs.ActiveCount() == 0 {
 		t.Fatal("all_enabled feature set should have >0 active features")
@@ -1175,7 +1173,6 @@ func TestSetFeatureSetOnSVM(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFeatureSetAllEnabled: %v", err)
 	}
-	defer fs.Close()
 
 	if err := svm.SetFeatureSet(fs); err != nil {
 		t.Fatalf("SetFeatureSet: %v", err)
